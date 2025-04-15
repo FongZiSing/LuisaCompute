@@ -6,13 +6,27 @@
 #include <luisa/ast/type.h>
 #include <luisa/ast/usage.h>
 #include <luisa/core/logging.h>
+#include <luisa/core/stl/variant.h>
 #include <luisa/ast/type_registry.h>
 using namespace luisa;
 using namespace luisa::compute;
 class LCSpvBuilder : public spv::Builder {
 public:
+    struct BufferTypeId {
+        spv::Id runtime_array_id;
+        spv::Id buffer_id;
+        spv::Id ptr_id;
+    };
+    struct TextureTypeId {
+        spv::Id type_id;
+        spv::Id ptr_id;
+    };
+    using TypeId = luisa::variant<
+        spv::Id,
+        BufferTypeId,
+        TextureTypeId>;
     LCSpvBuilder(unsigned int spvVersion, unsigned int userNumber, spv::SpvBuildLogger *logger) : spv::Builder(spvVersion, userNumber, logger) {}
-    spv::Id make_type(Type const *type, Usage usage = Usage::NONE) {
+    TypeId make_type(Type const *type, Usage usage = Usage::NONE) {
         using namespace spv;
         switch (type->tag()) {
             case Type::Tag::BOOL:
@@ -40,12 +54,12 @@ public:
             case Type::Tag::FLOAT64:
                 return makeFloatType(64);
             case Type::Tag::VECTOR:
-                return makeVectorType(make_type(type->element()), type->dimension());
+                return makeVectorType(luisa::get<0>(make_type(type->element())), type->dimension());
             case Type::Tag::MATRIX:
                 // TODO: float3x3 may have problem
-                return makeMatrixType(make_type(type->element()), type->dimension(), type->dimension());
+                return makeMatrixType(luisa::get<0>(make_type(type->element())), type->dimension(), type->dimension());
             case Type::Tag::ARRAY:
-                return makeArrayType(make_type(type->element()), makeUintConstant(type->size()), type->element()->size());
+                return makeArrayType(luisa::get<0>(make_type(type->element())), makeUintConstant(type->size()), type->element()->size());
             case Type::Tag::STRUCTURE: {
                 size_t offset = 0;
                 std::vector<Id> members;
@@ -53,7 +67,7 @@ public:
                 auto str_name = luisa::format("S{}", type->hash());
                 for (auto &mem : type->members()) {
                     offset = (offset + mem->alignment() - 1) & (~(mem->alignment() - 1));
-                    members.emplace_back(make_type(mem));
+                    members.emplace_back(luisa::get<0>(make_type(mem)));
                     offsets.emplace_back(offset);
                     offset += mem->size();
                 }
@@ -65,7 +79,7 @@ public:
             }
             case Type::Tag::BUFFER: {
                 auto runtime_arr_name = luisa::format("RA{}", type->hash());
-                auto runtime_arr_id = makeRuntimeArray(make_type(type->element()));
+                auto runtime_arr_id = makeRuntimeArray(luisa::get<0>(make_type(type->element())));
                 addDecoration(runtime_arr_id, DecorationArrayStride, type->element()->alignment());
                 std::vector<Id> member;
                 member.emplace_back(runtime_arr_id);
@@ -76,13 +90,13 @@ public:
                 if ((luisa::to_underlying(usage) & luisa::to_underlying(Usage::WRITE)) == 0) {
                     addMemberDecoration(runtime_arr_struct_id, 0, DecorationNonWritable);
                 }
-                return ptr_id;
+                return BufferTypeId{runtime_arr_id, runtime_arr_struct_id, ptr_id};
             }
             case Type::Tag::TEXTURE: {
-                Id type_2d;
+                Id type_id;
                 // Read sample type
                 if ((luisa::to_underlying(usage) & luisa::to_underlying(Usage::WRITE)) == 0) {
-                    type_2d = makeImageType(make_type(type->element()), (Dim)(type->dimension() - 1), false, 0, false, 1, ImageFormatUnknown);
+                    type_id = makeImageType(luisa::get<0>(make_type(type->element())), (Dim)(type->dimension() - 1), false, 0, false, 1, ImageFormatUnknown);
                 }
                 // Read write storage type
                 else {
@@ -119,9 +133,10 @@ public:
                         default:
                             LUISA_ERROR("Bad format.");
                     }
-                    type_2d = makeImageType(make_type(type->element()), (Dim)(type->dimension() - 1), false, 0, false, 2, format);
+                    type_id = makeImageType(luisa::get<0>(make_type(type->element())), (Dim)(type->dimension() - 1), false, 0, false, 2, format);
                 }
-                return makePointer(StorageClassUniformConstant, type_2d);
+                auto ptr_id = makePointer(StorageClassUniformConstant, type_id);
+                return TextureTypeId{type_id, ptr_id};
             }
             case Type::Tag::BINDLESS_ARRAY:
             case Type::Tag::ACCEL:
