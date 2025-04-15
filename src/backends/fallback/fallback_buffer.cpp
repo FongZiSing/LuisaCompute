@@ -17,12 +17,18 @@ FallbackBufferView FallbackBuffer::view_with_offset(size_t offset) noexcept {
     return {_data + offset, _size - offset};
 }
 
-FallbackBuffer::FallbackBuffer(size_t size_bytes) : _size{size_bytes} {
+FallbackBuffer::FallbackBuffer(size_t size_bytes) noexcept
+    : _size{size_bytes}, _is_external{false} {
     _data = luisa::allocate_with_allocator<std::byte>(_size);
 }
 
+FallbackBuffer::FallbackBuffer(std::byte *data, size_t size) noexcept
+    : _data{data}, _size{size}, _is_external{true} {}
+
 FallbackBuffer::~FallbackBuffer() noexcept {
-    luisa::deallocate_with_allocator(_data);
+    if (!_is_external) {
+        luisa::deallocate_with_allocator(_data);
+    }
 }
 
 }// namespace luisa::compute::fallback

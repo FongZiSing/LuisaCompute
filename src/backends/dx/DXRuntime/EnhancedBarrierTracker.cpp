@@ -71,6 +71,26 @@ static constexpr D3D12_BARRIER_LAYOUT BarrierLayoutMap[] = {
     D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,   // RasterUAV,
 };
 
+static D3D12_BARRIER_LAYOUT filter_layout(D3D12_BARRIER_LAYOUT last_layout, D3D12_BARRIER_ACCESS access) {
+    switch (last_layout) {
+        case D3D12_BARRIER_LAYOUT_SHADER_RESOURCE:
+            if (access != D3D12_BARRIER_ACCESS_SHADER_RESOURCE) {
+                return D3D12_BARRIER_LAYOUT_COMMON;
+            }
+            break;
+        case D3D12_BARRIER_LAYOUT_COPY_SOURCE:
+            if (access != D3D12_BARRIER_ACCESS_COPY_SOURCE) {
+                return D3D12_BARRIER_LAYOUT_COMMON;
+            }
+            break;
+        case D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ:
+            if (access != D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ) {
+                return D3D12_BARRIER_LAYOUT_COMMON;
+            }
+            break;
+    }
+    return last_layout;
+}
 }// namespace detail
 
 void EnhancedBarrierTracker::Record(
@@ -456,6 +476,7 @@ void EnhancedBarrierTrackerImpl::UpdateResourceState(Resource const *resPtr, Res
             if (!i.level_require_update) continue;
             i.level_require_update = false;
             D3D12_TEXTURE_BARRIER &barrier = texBarriers.emplace_back();
+            i.after_layout = detail::filter_layout(i.after_layout, i.after_access);
             barrier.SyncBefore = i.before_sync;
             barrier.SyncAfter = i.after_sync;
             barrier.AccessBefore = i.before_access;
@@ -536,7 +557,7 @@ void EnhancedBarrierTrackerImpl::RestoreState(CommandBufferBuilder const &cmdBuf
             barrier.Size = UINT64_MAX;
         } else {// Texture
             auto &vec = state.layer_states.get<1>();
-            auto init_layout = resPtr->GetTag() == Resource::Tag::SwapChain ? D3D12_BARRIER_LAYOUT_PRESENT : D3D12_BARRIER_LAYOUT_COMMON;
+            auto init_layout = D3D12_BARRIER_LAYOUT_COMMON;
             for (auto idx : vstd::range(vec.size())) {
                 auto &i = vec[idx];
                 if (!i.level_inited) continue;
@@ -588,7 +609,7 @@ void FilterAccess(
     D3D12_COMMAND_LIST_TYPE type,
     D3D12_BARRIER_SYNC &sync,
     D3D12_BARRIER_ACCESS &access,
-    D3D12_BARRIER_LAYOUT& layout) {
+    D3D12_BARRIER_LAYOUT &layout) {
     switch (type) {
         case D3D12_COMMAND_LIST_TYPE_COMPUTE: {
             sync &= ~D3D12_BARRIER_SYNC_DRAW;

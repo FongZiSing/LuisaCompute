@@ -605,6 +605,15 @@ void CUDACodegenXIR::_emit_ray_query_pipeline_inst(const xir::RayQueryPipelineIn
     }
 }
 
+[[nodiscard]] const xir::Instruction *CUDACodegenXIR::_find_innermost_loop() const noexcept {
+    for (auto it = _control_flow_stack.rbegin(); it != _control_flow_stack.rend(); ++it) {
+        if ((*it)->isa<xir::LoopInst>() || (*it)->isa<xir::SimpleLoopInst>()) {
+            return *it;
+        }
+    }
+    return nullptr;
+}
+
 void CUDACodegenXIR::_emit_instructions(const xir::InstructionList &inst_list, int indent) noexcept {
     for (auto &&inst : inst_list) {
         _emit_metadata(inst.metadata_list(), indent);
@@ -647,26 +656,23 @@ void CUDACodegenXIR::_emit_instructions(const xir::InstructionList &inst_list, i
                 }
                 break;
             }
-            case xir::DerivedInstructionTag::BREAK: _scratch << "break;"; break;
-            case xir::DerivedInstructionTag::CONTINUE: {
-                // find the innermost loop
-                auto loop = static_cast<const xir::Instruction *>(nullptr);
-                for (auto it = _control_flow_stack.rbegin(); it != _control_flow_stack.rend(); ++it) {
-                    if ((*it)->isa<xir::LoopInst>() || (*it)->isa<xir::SimpleLoopInst>()) {
-                        loop = *it;
-                        break;
-                    }
+            case xir::DerivedInstructionTag::BREAK: {
+                auto loop = _find_innermost_loop();
+                LUISA_ASSERT(loop != nullptr, "Break instruction is not in a loop.");
+                if (loop->isa<xir::LoopInst>()) {
+                    _scratch << "/* break inside generic loop */ { loop_break_";
+                    _emit_value_name(loop);
+                    _scratch << " = true; break; }";
+                } else {
+                    _scratch << "break;";
                 }
+                break;
+            }
+            case xir::DerivedInstructionTag::CONTINUE: {
+                auto loop = _find_innermost_loop();
                 LUISA_ASSERT(loop != nullptr, "Continue instruction is not in a loop.");
                 if (loop->isa<xir::LoopInst>()) {
-                    if (auto update_block = static_cast<const xir::LoopInst *>(loop)->update_block();
-                        update_block != nullptr && !update_block->instructions().empty()) {
-                        _scratch << "goto ";
-                        _emit_value_name(update_block);
-                        _scratch << ";";
-                    } else {
-                        _scratch << "continue;";
-                    }
+                    _scratch << "/* continue inside generic loop */ break;";
                 } else {
                     _scratch << "continue;";
                 }
@@ -975,12 +981,17 @@ void CUDACodegenXIR::_emit_switch_inst(const xir::SwitchInst *inst, int indent) 
 
 void CUDACodegenXIR::_emit_loop_inst(const xir::LoopInst *inst, int indent) noexcept {
     // template:
-    // loop {
+    // for (;;) {
     //   /* prepare */
-    //     if (br(merge)) { break; }
-    //     continue -> goto bb.update
-    //     break -> break;
-    //   bb.update:
+    //   if (br(merge)) { break; }
+    //   /* body */
+    //   bool loop_break = false;
+    //   do {
+    //     continue -> { break; }
+    //     break -> { loop_break = true; break; }
+    //   } while (false);
+    //   if (loop_break) { break; }
+    //   /* update */
     // }
     _scratch << "for (;;) { /* generic loop */\n";
     _emit_indent(indent + 1);
@@ -992,27 +1003,25 @@ void CUDACodegenXIR::_emit_loop_inst(const xir::LoopInst *inst, int indent) noex
     _emit_indent(indent + 1);
     // body
     _scratch << "/* generic loop body */\n";
+    _emit_indent(indent + 1);
+    _scratch << "bool loop_break_";
+    _emit_value_name(inst);
+    _scratch << " = false;\n";
+    _emit_indent(indent + 1);
+    _scratch << "do {\n";
     if (auto body_block = inst->body_block(); body_block != nullptr && !body_block->instructions().empty()) {
-        _emit_instructions(body_block->instructions(), indent + 1);
+        _emit_instructions(body_block->instructions(), indent + 2);
     }
+    _emit_indent(indent + 1);
+    _scratch << "} while (false);\n";
+    _emit_indent(indent + 1);
+    _scratch << "if (loop_break_";
+    _emit_value_name(inst);
+    _scratch << ") { break; }\n";
     // update
     if (auto update_block = inst->update_block(); update_block != nullptr && !update_block->instructions().empty()) {
-        auto any_continue_user = [&] {
-            for (auto &&use : inst->use_list()) {
-                if (auto user = use.user(); user != nullptr && user->isa<xir::ContinueInst>()) {
-                    return true;
-                }
-            }
-            return false;
-        }();
-        if (any_continue_user) {// we need to emit a label for continue
-            _emit_indent(indent);
-            _emit_value_name(inst->update_block());
-            _scratch << ": /* generic loop update */\n";
-        } else {// happily we can omit the label
-            _emit_indent(indent + 1);
-            _scratch << "/* generic loop update */\n";
-        }
+        _emit_indent(indent + 1);
+        _scratch << "/* generic loop update */\n";
         _emit_instructions(update_block->instructions(), indent + 1);
     }
     _emit_indent(indent);
@@ -1272,8 +1281,22 @@ void CUDACodegenXIR::_emit_arithmetic_inst(const xir::ArithmeticInst *inst, int 
         case xir::ArithmeticOp::BINARY_MUL: b("*"); break;
         case xir::ArithmeticOp::BINARY_DIV: b("/"); break;
         case xir::ArithmeticOp::BINARY_MOD: b("%"); break;
-        case xir::ArithmeticOp::BINARY_BIT_AND: b("&"); break;
-        case xir::ArithmeticOp::BINARY_BIT_OR: b("|"); break;
+        case xir::ArithmeticOp::BINARY_BIT_AND: {
+            if (auto t = inst->type(); t->is_bool() || t->is_bool_vector()) {
+                b("&&");
+            } else {
+                b("&");
+            }
+            break;
+        }
+        case xir::ArithmeticOp::BINARY_BIT_OR: {
+            if (auto t = inst->type(); t->is_bool() || t->is_bool_vector()) {
+                b("||");
+            } else {
+                b("|");
+            }
+            break;
+        }
         case xir::ArithmeticOp::BINARY_BIT_XOR: b("^"); break;
         case xir::ArithmeticOp::BINARY_SHIFT_LEFT: b("<<"); break;
         case xir::ArithmeticOp::BINARY_SHIFT_RIGHT: b(">>"); break;
@@ -1713,7 +1736,7 @@ void CUDACodegenXIR::_emit_conditional_branch_inst(const xir::ConditionalBranchI
 
 void CUDACodegenXIR::_emit_function_definition(const xir::FunctionDefinition *def,
                                                luisa::span<const Function::Binding> bindings) noexcept {
-    _lex_scope_info = xir::lex_scope_analysis_pass_run_on_function(def, {.loop_body_is_nested = false});
+    _lex_scope_info = xir::lex_scope_analysis_pass_run_on_function(def, {.loop_body_is_nested = true});
     _local_value_indices.clear();
     switch (def->derived_function_tag()) {
         case xir::DerivedFunctionTag::KERNEL: {

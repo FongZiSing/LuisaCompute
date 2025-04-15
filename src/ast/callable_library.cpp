@@ -677,6 +677,7 @@ Statement *CallableLibrary::deser_value(std::byte const *&ptr, DeserPackage &pac
         case Statement::Tag::DEBUG_BREAK:
             LUISA_NOT_IMPLEMENTED("Debug break statement deserialization is not implemented.");
     }
+    LUISA_ERROR_WITH_LOCATION("Unreachable code.");
 }
 template<>
 void CallableLibrary::deser_ptr(Statement *obj, std::byte const *&ptr, DeserPackage &pack) noexcept {

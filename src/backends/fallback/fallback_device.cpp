@@ -145,14 +145,21 @@ BufferCreationInfo FallbackDevice::create_buffer(const Type *element, size_t ele
         info.element_stride = element->size();
     }
     info.total_size_bytes = info.element_stride * elem_count;
-    auto buffer = luisa::new_with_allocator<FallbackBuffer>(info.total_size_bytes);
+    auto buffer = external_memory == nullptr ?
+                      luisa::new_with_allocator<FallbackBuffer>(info.total_size_bytes) :
+                      luisa::new_with_allocator<FallbackBuffer>(static_cast<std::byte *>(external_memory), info.total_size_bytes);
     info.handle = reinterpret_cast<uint64_t>(buffer);
     info.native_handle = reinterpret_cast<void *>(buffer->data());
     return info;
 }
 
 BufferCreationInfo FallbackDevice::create_buffer(const ir::CArc<ir::Type> *element, size_t elem_count, void *external_memory) noexcept {
-    return BufferCreationInfo();
+#ifdef LUISA_ENABLE_IR
+    auto type = IR2AST::get_type(element->get());
+    return create_buffer(type, elem_count, external_memory);
+#else
+    LUISA_ERROR_WITH_LOCATION("LuisaCompute's fallback backend is compiled without IR support.");
+#endif
 }
 
 ResourceCreationInfo FallbackDevice::create_texture(PixelFormat format, uint dimension, uint width, uint height, uint depth, uint mipmap_levels, bool simultaneous_access, bool allow_raster_target) noexcept {

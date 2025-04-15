@@ -56,6 +56,7 @@ private:
     [[nodiscard]] static bool _should_emit_global_constant(const xir::Constant *c) noexcept;
     [[nodiscard]] bool _is_ray_query_callback_function(const xir::CallableFunction *f) const noexcept;
     [[nodiscard]] bool _is_builtin_type(const Type *t) const noexcept;
+    [[nodiscard]] const xir::Instruction *_find_innermost_loop() const noexcept;
     void _emit_type_name(const Type *type) noexcept;
     void _emit_type_definition(const Type *type, luisa::unordered_set<const Type *> &defined_types) noexcept;
     void _emit_type_definitions(luisa::unordered_set<const Type *> used_types) noexcept;
