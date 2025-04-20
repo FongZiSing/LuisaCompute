@@ -18,6 +18,7 @@ using uint16_t = unsigned short;
 using uint32_t = unsigned int;
 using uint64_t = unsigned long long;
 using size_t = unsigned long long;
+using MotionInstanceTransform = luisa::compute::MotionInstanceTransform;
 #endif
 
 extern "C" {
@@ -181,7 +182,6 @@ struct alignas(16) AccelInstance {
     uint8_t is_motion : 1;
     uint8_t is_srt : 1;
     uint8_t is_matrix : 1;
-    uint8_t padding : 2;
     uint8_t motion_steps;
     uint user_id;
     MotionInstanceTransform *motion;

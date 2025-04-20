@@ -256,6 +256,7 @@ on_load(function(target)
     end
 
     local force_optimize = _get_or("force_optimize", nil)
+    local win_runtime = get_config("lc_win_runtime")
     if is_mode("debug") then
         -- target:set("runtimes", _get_or("runtime", "MDd"), {
         --     public = true
@@ -263,12 +264,14 @@ on_load(function(target)
         target:set("runtimes", _get_or("runtime", "MTd"), {
             public = true
         })
+        if not win_runtime then
+            win_runtime = "MDd"
+        end
         if force_optimize then
             target:set("optimize", "aggressive")
         else
             target:set("optimize", "none")
         end
-        target:set("warnings", "none")
         target:add("cxflags", "/GS", "/Gd", {
             tools = {"clang_cl", "cl"},
             public = true
@@ -280,12 +283,14 @@ on_load(function(target)
         target:set("runtimes", _get_or("runtime", "MTd"), {
             public = true
         })
+        if not win_runtime then
+            win_runtime = "MDd"
+        end
         if force_optimize then
             target:set("optimize", "aggressive")
         else
             target:set("optimize", "none")
         end
-        target:set("warnings", "none")
         target:add("cxflags", "/GS-", "/Gd", {
             tools = {"clang_cl", "cl"},
             public = true
@@ -299,13 +304,19 @@ on_load(function(target)
             public = true
         })
  
+        if not win_runtime then
+            win_runtime = "MD"
+        end
         target:set("optimize", "aggressive")
-        target:set("warnings", "none")
         target:add("cxflags", "/GS-", "/Gd", {
             tools = {"clang_cl", "cl"},
             public = true
         })
     end
+    target:set("warnings", "none")
+    target:set("runtimes", _get_or("runtime", win_runtime), {
+        public = true
+    })
     target:set("fpmodels", "fast")
     target:add("cxflags", "/Zc:preprocessor", {
         tools = "cl",

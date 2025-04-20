@@ -27,6 +27,17 @@ void Instruction::_add_self_to_operand_use_lists() noexcept {
     }
 }
 
+Instruction *Instruction::clone_with_metadata(XIRBuilder &b, InstructionCloneValueResolver &resolver) const noexcept {
+    auto cloned = this->clone(b, resolver);
+    auto pool = cloned->pool();
+    for (auto &md : metadata_list()) {
+        auto new_md = md.clone(pool);
+        LUISA_DEBUG_ASSERT(new_md != nullptr, "Failed to clone metadata.");
+        new_md->add_to_list(cloned->metadata_list());
+    }
+    return cloned;
+}
+
 void Instruction::remove_self() noexcept {
     Super::remove_self();
     _remove_self_from_operand_use_lists();
@@ -60,7 +71,7 @@ DerivedInstructionTag SentinelInst::derived_instruction_tag() const noexcept {
     LUISA_ERROR_WITH_LOCATION("Calling SentinelInst::derived_instruction_tag()");
 }
 
-Instruction *SentinelInst::clone(Builder &b, InstructionCloneValueResolver &resolver) const noexcept {
+Instruction *SentinelInst::clone(XIRBuilder &b, InstructionCloneValueResolver &resolver) const noexcept {
     LUISA_ERROR_WITH_LOCATION("Calling SentinelInst::clone()");
 }
 
@@ -148,7 +159,7 @@ const BasicBlock *ConditionalBranchTerminatorInstruction::false_block() const no
 }
 
 void ControlFlowMerge::set_merge_block(BasicBlock *block) noexcept {
-    auto base = _base_instruction();
+    [[maybe_unused]] auto base = _base_instruction();
     LUISA_DEBUG_ASSERT(block == nullptr || (block->parent_function() == base->parent_function() &&
                                             block->pool() == base->pool()),
                        "Invalid merge block.");
@@ -161,5 +172,14 @@ BasicBlock *ControlFlowMerge::create_merge_block(bool overwrite_existing) noexce
     set_merge_block(block);
     return block;
 }
+
+namespace detail {
+
+luisa::string intrinsic_identifier_with_print_message(luisa::string base_ident, luisa::string_view message) noexcept {
+    luisa::format_to(std::back_inserter(base_ident), "({:?})", message);
+    return base_ident;
+}
+
+}// namespace detail
 
 }// namespace luisa::compute::xir

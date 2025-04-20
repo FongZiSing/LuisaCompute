@@ -13,6 +13,7 @@ public:
     SparseBufferHeap() noexcept = default;
     ~SparseBufferHeap() noexcept override;
     using Resource::operator bool;
+    using Resource::release;
     SparseBufferHeap(SparseBufferHeap &&) noexcept = default;
     SparseBufferHeap(SparseBufferHeap const &) noexcept = delete;
     SparseBufferHeap &operator=(SparseBufferHeap &&rhs) noexcept {
@@ -34,6 +35,7 @@ public:
     SparseTextureHeap() noexcept = default;
     ~SparseTextureHeap() noexcept override;
     using Resource::operator bool;
+    using Resource::release;
     SparseTextureHeap(SparseTextureHeap &&) noexcept = default;
     SparseTextureHeap(SparseTextureHeap const &) noexcept = delete;
     SparseTextureHeap &operator=(SparseTextureHeap &&rhs) noexcept {

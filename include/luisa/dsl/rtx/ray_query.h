@@ -75,7 +75,6 @@ class RayQueryProceduralProxy;
 
 template<bool terminate_on_first>
 class LC_DSL_API RayQueryBase {
-
 protected:
     RayQueryStmt *_stmt;
     bool _inside_surface_handler{false};
@@ -88,19 +87,21 @@ public:
 protected:
     RayQueryBase(const Expression *accel,
                  const Expression *ray,
-                 const Expression *mask) noexcept;
+                 const Expression *mask,
+                 CurveBasisSet curve_bases) noexcept;
 
     RayQueryBase(const Expression *accel,
                  const Expression *ray,
                  const Expression *time,
-                 const Expression *mask) noexcept;
+                 const Expression *mask,
+                 CurveBasisSet curve_bases) noexcept;
 
     RayQueryBase(RayQueryStmt *stmt,
                  bool inside_surface_handler,
                  bool inside_procedural_handler) noexcept
-        : _stmt(stmt),
-          _inside_surface_handler(inside_surface_handler),
-          _inside_procedural_handler(inside_procedural_handler) {}
+        : _stmt{stmt},
+          _inside_surface_handler{inside_surface_handler},
+          _inside_procedural_handler{inside_procedural_handler} {}
 
 public:
     virtual ~RayQueryBase() noexcept = default;
@@ -133,7 +134,6 @@ public:
     using ProceduralCandidateHandler = luisa::function<void(ProceduralCandidate &)>;
 
     // legacy names, provided for compatibility
-
     RayQueryProceduralProxy(RayQueryProceduralProxy const &) noexcept = delete;
     RayQueryProceduralProxy &operator=(RayQueryProceduralProxy &&) noexcept = delete;
     RayQueryProceduralProxy &operator=(RayQueryProceduralProxy const &) noexcept = delete;
@@ -180,14 +180,16 @@ private:
 
     RayQueryProxy(const Expression *accel,
                   const Expression *ray,
-                  const Expression *mask) noexcept
-        : RayQueryBase<terminate_on_first>(accel, ray, mask) {}
+                  const Expression *mask,
+                  CurveBasisSet curve_bases) noexcept
+        : RayQueryBase<terminate_on_first>(accel, ray, mask, curve_bases) {}
 
     RayQueryProxy(const Expression *accel,
                   const Expression *ray,
                   const Expression *time,
-                  const Expression *mask) noexcept
-        : RayQueryBase<terminate_on_first>(accel, ray, time, mask) {}
+                  const Expression *mask,
+                  CurveBasisSet curve_bases) noexcept
+        : RayQueryBase<terminate_on_first>(accel, ray, time, mask, curve_bases) {}
 
     RayQueryProxy(RayQueryProxy &&rhs) noexcept = default;
 

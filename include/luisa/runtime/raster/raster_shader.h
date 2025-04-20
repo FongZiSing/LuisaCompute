@@ -189,6 +189,7 @@ public:
         if (*this) { _raster_ext->destroy_raster_shader(handle()); }
     }
     using Resource::operator bool;
+    using Resource::release;
     [[nodiscard]] auto operator()(detail::prototype_to_shader_invocation_t<Args>... args) const noexcept {
         size_t arg_size;
         if (_bindings.empty()) {

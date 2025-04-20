@@ -1,16 +1,16 @@
 #pragma once
 #include <DXRuntime/Device.h>
-#include <EASTL/shared_ptr.h>
 #include <luisa/runtime/rhi/command.h>
 #include <luisa/runtime/device.h>
 #include <Resource/Resource.h>
+#include <DXRuntime/EnhancedBarrierTracker.h>
 using namespace luisa::compute;
 namespace lc::dx {
 class DefaultBuffer;
 class BottomAccel;
 class BboxAccel;
 class CommandBufferBuilder;
-class ResourceStateTracker;
+class EnhancedBarrierTracker;
 class Mesh;
 class BottomAccel;
 class MeshHandle;
@@ -34,6 +34,7 @@ class TopAccel : public Resource {
         MeshHandle *handle = nullptr;
     };
     vstd::vector<Instance> allInstance;
+    void ResizeAllInstance(size_t size);
     vstd::unordered_map<uint64, MeshHandle *> setMap;
     vstd::vector<PackedModifier> setDesc;
     void SetMesh(BottomAccel *mesh, uint64 index);
@@ -44,7 +45,7 @@ class TopAccel : public Resource {
         MeshHandle *handle);
     bool GenerateNewBuffer(
         char const *name,
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         CommandBufferBuilder &builder,
         vstd::unique_ptr<DefaultBuffer> &oldBuffer, size_t newSize, bool needCopy, D3D12_RESOURCE_STATES state);
     void InitSetDesc(vstd::span<AccelBuildCommand::Modification const> const &modifications);
@@ -64,18 +65,18 @@ public:
         return instBuffer.get();
     }
     size_t PreProcess(
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         CommandBufferBuilder &builder,
         uint64 size,
         vstd::span<AccelBuildCommand::Modification const> const &modifications,
         bool update);
     void PreProcessInst(
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         CommandBufferBuilder &builder,
         uint64 size,
         vstd::span<AccelBuildCommand::Modification const> const &modifications);
     void Build(
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         CommandBufferBuilder &builder,
         BufferView const *scratchBuffer);
     void FinalCopy(

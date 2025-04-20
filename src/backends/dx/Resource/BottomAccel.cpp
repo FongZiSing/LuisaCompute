@@ -1,7 +1,6 @@
 #include <Resource/BottomAccel.h>
 #include <DXRuntime/CommandAllocator.h>
 #include <DXRuntime/CommandBuffer.h>
-#include <DXRuntime/ResourceStateTracker.h>
 #include <Resource/TopAccel.h>
 #include <luisa/runtime/rtx/aabb.h>
 #include <luisa/core/logging.h>
@@ -10,22 +9,24 @@ using namespace luisa::compute;
 namespace detail {
 void MeshPreprocess(
     Buffer const *vHandle,
+    uint64 vert_offset, uint64 vert_size,
     Buffer const *iHandle,
-    ResourceStateTracker &tracker) {
-    auto buildAccelState = tracker.ReadState(ResourceReadUsage::AccelBuildSrc);
-    tracker.RecordState(
-        vHandle,
-        buildAccelState);
-    tracker.RecordState(
-        iHandle,
-        buildAccelState);
+    uint64 idx_offset, uint64 idx_size,
+    EnhancedBarrierTracker &tracker) {
+    tracker.Record(
+        BufferView(vHandle, vert_offset, vert_size),
+        EnhancedBarrierTracker::Usage::AccelInstanceBuffer);
+    tracker.Record(
+        BufferView(iHandle, idx_offset, idx_size),
+        EnhancedBarrierTracker::Usage::AccelInstanceBuffer);
 }
 void AABBPreprocess(
     Buffer const *aabbHandle,
-    ResourceStateTracker &tracker) {
-    tracker.RecordState(
-        aabbHandle,
-        tracker.ReadState(ResourceReadUsage::AccelBuildSrc));
+    uint64 vert_offset, uint64 vert_size,
+    EnhancedBarrierTracker &tracker) {
+    tracker.Record(
+        BufferView(aabbHandle, vert_offset, vert_size),
+        EnhancedBarrierTracker::Usage::AccelInstanceBuffer);
 }
 void GetStaticTriangleGeometryDesc(
     D3D12_RAYTRACING_GEOMETRY_DESC &geometryDesc,
@@ -92,7 +93,7 @@ void BottomAccel::SyncTopAccel() {
 
 size_t BottomAccel::PreProcessStates(
     CommandBufferBuilder &builder,
-    ResourceStateTracker &tracker,
+    EnhancedBarrierTracker &tracker,
     bool update,
     vstd::variant<MeshOptions, AABBOptions> const &options,
     BottomAccelData &bottomData) {
@@ -109,13 +110,13 @@ size_t BottomAccel::PreProcessStates(
     bottomInput.pGeometryDescs = &geometryDesc;
     if (options.index() == 0) {
         auto &meshOption = options.get<0>();
-        detail::MeshPreprocess(meshOption.vHandle, meshOption.iHandle, tracker);
+        detail::MeshPreprocess(meshOption.vHandle, meshOption.vOffset, meshOption.vSize, meshOption.iHandle, meshOption.iOffset, meshOption.iSize, tracker);
         detail::GetStaticTriangleGeometryDesc(
             geometryDesc,
             meshOption.vHandle, meshOption.vOffset, meshOption.vStride, meshOption.vSize, meshOption.iHandle, meshOption.iOffset, meshOption.iSize);
     } else {
         auto &aabbOption = options.get<1>();
-        detail::AABBPreprocess(aabbOption.aabbBuffer, tracker);
+        detail::AABBPreprocess(aabbOption.aabbBuffer, aabbOption.offset, aabbOption.size, tracker);
         detail::GetStaticAABBGeometryDesc(
             geometryDesc,
             aabbOption.aabbBuffer, aabbOption.offset, aabbOption.size);
@@ -182,7 +183,7 @@ bool BottomAccel::CheckAccel(
     return true;
 }
 void BottomAccel::UpdateStates(
-    ResourceStateTracker &tracker,
+    EnhancedBarrierTracker &tracker,
     CommandBufferBuilder &builder,
     BufferView const &scratchBuffer,
     BottomAccelData &accelData) {
@@ -203,7 +204,8 @@ void BottomAccel::UpdateStates(
             0,
             nullptr);
     }
-    tracker.RecordState(GetAccelBuffer(), D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+    auto vv = accelBuffer->GetInitState();
+    tracker.Record(GetAccelBuffer(), EnhancedBarrierTracker::Range(), EnhancedBarrierTracker::Usage::BuildAccel);
 }
 void BottomAccel::FinalCopy(
     CommandBufferBuilder &builder,

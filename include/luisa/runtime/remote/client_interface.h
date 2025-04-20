@@ -46,7 +46,8 @@ public:
     [[nodiscard]] ResourceCreationInfo create_texture(
         PixelFormat format, uint dimension,
         uint width, uint height, uint depth,
-        uint mipmap_levels, bool simultaneous_access, bool allow_raster_target) noexcept override;
+        uint mipmap_levels, void* external_native_handle,
+        bool simultaneous_access, bool allow_raster_target) noexcept override;
     void destroy_texture(uint64_t handle) noexcept override;
 
     // bindless array

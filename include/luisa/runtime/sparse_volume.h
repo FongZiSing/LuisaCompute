@@ -41,6 +41,7 @@ private:
 public:
     SparseVolume() noexcept = default;
     using Resource::operator bool;
+    using Resource::release;
     SparseVolume(SparseVolume &&) noexcept = default;
     SparseVolume(const SparseVolume &) noexcept = delete;
     SparseVolume &operator=(SparseVolume &&rhs) noexcept {

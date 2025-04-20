@@ -28,6 +28,7 @@ public:
     }
     DepthBuffer &operator=(DepthBuffer const &) noexcept = delete;
     using Resource::operator bool;
+    using Resource::release;
     [[nodiscard]] auto size() const noexcept { return _size; }
     [[nodiscard]] auto format() const noexcept { return _format; }
     [[nodiscard]] luisa::unique_ptr<Command> clear(float value) const noexcept;

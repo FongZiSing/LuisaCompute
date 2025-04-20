@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
             s.a = v;
             s.b = coord;
             $outline {
-                device_log("s = {}", s);
+                device_log("s = {} at {}", s, dispatch_id());
             };
         };
     };

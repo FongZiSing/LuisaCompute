@@ -58,7 +58,7 @@ private:
     luisa::unique_ptr<Impl> _impl;
 
 public:
-    ImGuiWindow() noexcept = default;
+    ImGuiWindow() noexcept;
     ImGuiWindow(Device &device, Stream &stream,
                 luisa::string name,
                 const Config &config = Config::make_default()) noexcept;

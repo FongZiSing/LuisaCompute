@@ -99,7 +99,18 @@ if __name__ == "__main__":
                 continue
             print(f"using lc_{t} = {native_t};", file=file)
         print(file=file)
-        print('''[[nodiscard]] __device__ inline bool isinf_impl(lc_float x) noexcept {
+        print('''template<typename T>
+[[nodiscard]] __device__ inline auto lc_undef_value() noexcept {
+    T x;
+    return x;
+}
+
+template<typename T>
+[[nodiscard]] __device__ inline const auto &lc_decode_bytes(const lc_ubyte *bytes) noexcept {
+    return *reinterpret_cast<const T *>(bytes);
+}
+
+[[nodiscard]] __device__ inline bool isinf_impl(lc_float x) noexcept {
     auto u = __float_as_int(x);
     return u == 0x7f800000u | u == 0xff800000u;
 }

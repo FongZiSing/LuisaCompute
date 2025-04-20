@@ -61,6 +61,10 @@ void User::set_operands(luisa::span<Value *const> operands) noexcept {
     }
 }
 
+void User::reserve_operands(size_t n) noexcept {
+    _operands.reserve(n);
+}
+
 void User::add_operand(Value *value) noexcept {
     auto use = pool()->create<Use>(this);
     set_operand_use_value(use, value);

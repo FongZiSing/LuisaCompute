@@ -164,7 +164,7 @@ LUISA_STRUCT(Foo, v, f, z) {};
 
 int main(int argc, char *argv[]) {
 
-    luisa::log_level_info();
+    // luisa::log_level_info();
 
     auto context = Context{argv[0]};
     if (argc <= 1) {
@@ -244,7 +244,7 @@ int main(int argc, char *argv[]) {
         });
     }
     {
-        test_ad_helper<3>("array_sum2", device, [](auto a, auto b, auto c) {
+        test_ad_helper<2>("array_sum2", device, [](auto a, auto b) {
             ArrayFloat<2> arr{a, b};
             return arr[0] + arr[1];
         });

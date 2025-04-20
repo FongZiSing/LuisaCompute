@@ -1,6 +1,7 @@
 #include <luisa/ast/function.h>
 #include "ast_evaluator.h"
 #include <luisa/ast/type_registry.h>
+#include <luisa/core/stl/variant.h>
 #include <luisa/core/logging.h>
 #include <algorithm>
 #include <luisa/core/mathematics.h>
@@ -68,7 +69,11 @@ using ScalarType_t = typename ScalarType<T>::type;
 
 template<typename T, typename Variant>
 T &force_get(Variant &&variant) {
-    return *variant.template get_as<T *>();
+    return *luisa::visit(
+        [](auto &v) noexcept {
+            return reinterpret_cast<T *>(&v);
+        },
+        variant);
 }
 
 }// namespace analyzer_detail

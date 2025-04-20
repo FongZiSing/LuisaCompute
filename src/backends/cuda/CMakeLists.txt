@@ -1,4 +1,4 @@
-find_package(CUDAToolkit 12.8 COMPONENTS cuda_driver nvrtc_static)
+find_package(CUDAToolkit 12.1 COMPONENTS cuda_driver nvrtc_static)
 
 if (CUDAToolkit_FOUND)
     message(STATUS "Build with CUDA backend: ${CUDAToolkit_VERSION}")
@@ -14,6 +14,7 @@ if (CUDAToolkit_FOUND)
             cuda_command_encoder.cpp cuda_command_encoder.h
             cuda_texture.cpp cuda_texture.h
             cuda_codegen_ast.cpp cuda_codegen_ast.h
+            cuda_codegen_xir.cpp cuda_codegen_xir.h
             cuda_compiler.cpp cuda_compiler.h
             cuda_accel.cpp cuda_accel.h
             cuda_primitive.cpp cuda_primitive.h
@@ -43,8 +44,8 @@ if (CUDAToolkit_FOUND)
     target_link_libraries(luisa-compute-backend-cuda PRIVATE
             CUDA::cuda_driver
             luisa-compute-vulkan-swapchain
+            luisa-compute-xir
             reproc reproc++)
-    target_precompile_headers(luisa-compute-backend-cuda PRIVATE pch.h)
 
     find_library(CUDA_DEVICE_RUNTIME_LIBRARY cudadevrt ${CUDAToolkit_LIBRARY_DIR})
     add_custom_command(TARGET luisa-compute-backend-cuda POST_BUILD
@@ -82,24 +83,26 @@ if (CUDAToolkit_FOUND)
 
     # nvCOMP
     if (LUISA_COMPUTE_DOWNLOAD_NVCOMP)
+        # https://developer.download.nvidia.com/compute/nvcomp/redist/nvcomp/windows-x86_64/nvcomp-windows-x86_64-4.2.0.11_cuda12-archive.zip
+        # https://developer.download.nvidia.com/compute/nvcomp/redist/nvcomp/linux-x86_64/nvcomp-linux-x86_64-4.2.0.11_cuda12-archive.tar.xz
+        # https://developer.download.nvidia.com/compute/nvcomp/redist/nvcomp/linux-sbsa/nvcomp-linux-sbsa-4.2.0.11_cuda12-archive.tar.xz
         if (WIN32)
-            set(NVCOMP_PLATFORM "windows")
+            set(NVCOMP_PLATFORM "windows-x86_64")
             set(NVCOMP_EXT "zip")
         elseif (UNIX)
             if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-                set(NVCOMP_PLATFORM "aarch64")
+                set(NVCOMP_PLATFORM "linux-sbsa")
             elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
-                set(NVCOMP_PLATFORM "x86_64")
+                set(NVCOMP_PLATFORM "linux-x86_64")
             else()
                 message(FATAL_ERROR "Unsupported Linux architecture: ${CMAKE_SYSTEM_PROCESSOR}")
             endif()
-            set(NVCOMP_EXT "tgz")
+            set(NVCOMP_EXT "tar.xz")
         else()
             message(FATAL_ERROR "Unsupported operating system")
         endif()
-
         set(NVCOMP_VERSION "4.2.0.11")
-        set(NVCOMP_DOWNLOAD_URL "https://developer.download.nvidia.com/compute/nvcomp/${NVCOMP_VERSION}/local_installers/nvcomp_${NVCOMP_VERSION}_${NVCOMP_PLATFORM}_${CUDAToolkit_VERSION_MAJOR}.x.${NVCOMP_EXT}")
+        set(NVCOMP_DOWNLOAD_URL "https://developer.download.nvidia.com/compute/nvcomp/redist/nvcomp/${NVCOMP_PLATFORM}/nvcomp-${NVCOMP_PLATFORM}-${NVCOMP_VERSION}_cuda${CUDAToolkit_VERSION_MAJOR}-archive.${NVCOMP_EXT}")
         message(STATUS "Downloading nvcomp from ${NVCOMP_DOWNLOAD_URL}")
         include(FetchContent)
         FetchContent_Declare(nvcomp URL ${NVCOMP_DOWNLOAD_URL} DOWNLOAD_EXTRACT_TIMESTAMP ON)
@@ -113,22 +116,15 @@ if (CUDAToolkit_FOUND)
     if (NOT nvcomp_FOUND)
         message(WARNING ${_NVCOMP_WARNING_MSG})
     else ()
-        if (${nvcomp_VERSION} VERSION_LESS "3.0.0")
+        if (${nvcomp_VERSION} VERSION_LESS "4.0.0")
             message(WARNING ${_NVCOMP_WARNING_MSG})
         else ()
             target_compile_definitions(luisa-compute-backend-cuda PRIVATE LUISA_COMPUTE_ENABLE_NVCOMP=1)
             set(NVCOMP_TARGETS
-                    nvcomp::nvcomp
-                    nvcomp::nvcomp_bitcomp
-                    nvcomp::nvcomp_gdeflate)
+                    nvcomp::nvcomp_static
+                    nvcomp::nvcomp_cpu_static
+                    nvcomp::nvcomp_device_static)
             target_link_libraries(luisa-compute-backend-cuda PRIVATE ${NVCOMP_TARGETS})
-            foreach (target ${NVCOMP_TARGETS})
-                add_custom_command(TARGET luisa-compute-backend-cuda POST_BUILD
-                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        $<TARGET_FILE:${target}>
-                        $<TARGET_FILE_DIR:luisa-compute-core>)
-                install(FILES $<TARGET_FILE:${target}> DESTINATION ${CMAKE_INSTALL_BINDIR})
-            endforeach ()
         endif ()
     endif ()
 

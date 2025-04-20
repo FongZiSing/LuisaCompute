@@ -13,6 +13,9 @@ set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# set basic compilation options
+include(scripts/setup_compilation.cmake)
+
 project(LuisaCompute LANGUAGES C CXX VERSION 0.4.0)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -28,7 +31,7 @@ if (NOT SKBUILD AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/options.cmake")
     include(scripts/options.cmake)
 else ()
     option(LUISA_COMPUTE_ENABLE_DSL "Enable C++ DSL" ON)
-    option(LUISA_COMPUTE_ENABLE_TENSOR "Enable C++ DSL tensor extension" ON)
+    option(LUISA_COMPUTE_ENABLE_TENSOR "Enable C++ DSL tensor extension" OFF)
     option(LUISA_COMPUTE_ENABLE_DX "Enable DirectX backend" ON)
     option(LUISA_COMPUTE_ENABLE_METAL "Enable Metal backend" ON)
     option(LUISA_COMPUTE_ENABLE_CUDA "Enable CUDA backend" ON)
@@ -43,6 +46,8 @@ else ()
     option(LUISA_COMPUTE_EMBREE_ZIP_PATH "Path to embree zip file. Use this if embree fails to download" "")
 endif ()
 
+option(LUISA_COMPUTE_USE_SYSTEM_STL "Use system STL instead of EASTL" OFF)
+
 option(LUISA_COMPUTE_ENABLE_SANITIZERS "Enable sanitizers" OFF)
 option(LUISA_COMPUTE_ENABLE_UNITY_BUILD "Enable unity build (which might accelerate the compilation but could break VS Code's clangd indexing)" OFF)
 option(LUISA_COMPUTE_CHECK_BACKEND_DEPENDENCIES "Check dependencies of backends (and disable the unsatisfied ones instead of reporting a configuration error)" ON)
@@ -54,6 +59,14 @@ endif ()
 # validate the options
 include(scripts/validate_options.cmake)
 
+# enable objc and objcxx for Apple platforms
+if (APPLE)
+    if (LUISA_COMPUTE_ENABLE_METAL OR LUISA_COMPUTE_ENABLE_GUI)
+        enable_language(OBJC)
+        enable_language(OBJCXX)
+    endif ()
+endif ()
+
 # Open Image Denoise
 option(LUISA_COMPUTE_DOWNLOAD_OIDN "Download OpenImageDenoise for denoiser extension" OFF)
 
@@ -62,8 +75,7 @@ if (LUISA_COMPUTE_ENABLE_CUDA)
     option(LUISA_COMPUTE_DOWNLOAD_NVCOMP "Download the nvCOMP library for CUDA GPU decompression" OFF)
 endif ()
 
-# basic set-up for compilers
-include(scripts/setup_compilation.cmake)
+# setup the build output directories
 include(scripts/setup_output_dirs.cmake)
 
 # rpath

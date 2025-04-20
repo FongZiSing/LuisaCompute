@@ -111,6 +111,13 @@ class CommandBuffer : public vstd::IOperatorNewBase {
 public:
     void UpdateCommandBuffer(Device *device);
     ID3D12GraphicsCommandList4 *CmdList() const { return cmdList.Get(); }
+    ComPtr<ID3D12GraphicsCommandList7> NextCmdList() const {
+        ComPtr<ID3D12GraphicsCommandList7> cmdlist;
+        if (cmdList->QueryInterface(IID_PPV_ARGS(&cmdlist)) != S_OK) {
+            return nullptr;
+        }
+        return cmdlist;
+    }
     bool ContainedCmdList() const { return cmdList.Contained(); }
     CommandBuffer(
         Device *device,

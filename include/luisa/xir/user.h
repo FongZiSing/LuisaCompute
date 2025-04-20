@@ -23,6 +23,7 @@ public:
     void set_operand(size_t index, Value *value) noexcept;
     void set_operands(luisa::span<Value *const> operands) noexcept;
 
+    void reserve_operands(size_t n) noexcept;
     void add_operand(Value *value) noexcept;
     void insert_operand(size_t index, Value *value) noexcept;
     void remove_operand(size_t index) noexcept;

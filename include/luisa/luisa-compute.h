@@ -34,12 +34,13 @@
 #include <luisa/core/dynamic_module.h>
 #include <luisa/core/fiber.h>
 #include <luisa/core/first_fit.h>
-#include <luisa/core/forget.h>
 #include <luisa/core/intrin.h>
 #include <luisa/core/logging.h>
 #include <luisa/core/macro.h>
 #include <luisa/core/magic_enum.h>
+#include <luisa/core/managed_ptr.h>
 #include <luisa/core/mathematics.h>
+#include <luisa/core/memory_sanitizer.hpp>
 #include <luisa/core/platform.h>
 #include <luisa/core/pool.h>
 #include <luisa/core/shared_function.h>
@@ -166,8 +167,14 @@
 #endif
 
 #ifdef LUISA_ENABLE_TENSOR
-#include <luisa/tensor/scope.h>
+#include <luisa/tensor/expression.h>
+#include <luisa/tensor/ext.h>
+#include <luisa/tensor/fused_activation.h>
+#include <luisa/tensor/graph.h>
+#include <luisa/tensor/kernel.h>
+#include <luisa/tensor/pass/expr_topo.h>
 #include <luisa/tensor/tensor.h>
+#include <luisa/tensor/tensor_builder.h>
 #endif
 
 #include <luisa/vstl/allocate_type.h>
@@ -202,6 +209,7 @@
 #include <luisa/xir/basic_block.h>
 #include <luisa/xir/builder.h>
 #include <luisa/xir/constant.h>
+#include <luisa/xir/debug_printer.h>
 #include <luisa/xir/function.h>
 #include <luisa/xir/ilist.h>
 #include <luisa/xir/instruction.h>
@@ -217,6 +225,7 @@
 #include <luisa/xir/instructions/cast.h>
 #include <luisa/xir/instructions/clock.h>
 #include <luisa/xir/instructions/continue.h>
+#include <luisa/xir/instructions/debug_break.h>
 #include <luisa/xir/instructions/gep.h>
 #include <luisa/xir/instructions/if.h>
 #include <luisa/xir/instructions/load.h>
@@ -234,15 +243,18 @@
 #include <luisa/xir/instructions/unreachable.h>
 #include <luisa/xir/metadata.h>
 #include <luisa/xir/metadata/comment.h>
+#include <luisa/xir/metadata/curve_basis.h>
 #include <luisa/xir/metadata/location.h>
 #include <luisa/xir/metadata/name.h>
 #include <luisa/xir/module.h>
+#include <luisa/xir/op.h>
 #include <luisa/xir/passes/aggregate_field_bitmask.h>
 #include <luisa/xir/passes/autodiff.h>
 #include <luisa/xir/passes/call_graph.h>
 #include <luisa/xir/passes/dce.h>
 #include <luisa/xir/passes/dom_tree.h>
 #include <luisa/xir/passes/early_return_elimination.h>
+#include <luisa/xir/passes/lex_scope_analysis.h>
 #include <luisa/xir/passes/local_load_elimination.h>
 #include <luisa/xir/passes/local_store_forward.h>
 #include <luisa/xir/passes/lower_ray_query_loop.h>

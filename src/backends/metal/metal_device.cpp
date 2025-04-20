@@ -35,33 +35,34 @@
 
 namespace luisa::compute::metal {
 
+static void check_if_metal3_supported() noexcept {
+    auto o = MTL::CompileOptions::alloc()->init();
+    auto version = [o] {
+        using namespace std::string_view_literals;
+        switch (auto v [[maybe_unused]] = o->languageVersion()) {
+            case MTL::LanguageVersion1_0: return "1.0"sv;
+            case MTL::LanguageVersion1_1: return "1.1"sv;
+            case MTL::LanguageVersion1_2: return "1.2"sv;
+            case MTL::LanguageVersion2_0: return "2.0"sv;
+            case MTL::LanguageVersion2_1: return "2.1"sv;
+            case MTL::LanguageVersion2_2: return "2.2"sv;
+            case MTL::LanguageVersion2_3: return "2.3"sv;
+            case MTL::LanguageVersion2_4: return "2.4"sv;
+            default: break;
+        }
+        return "adequate"sv;
+    }();
+    o->release();
+    LUISA_ASSERT(version == "adequate",
+                 "Metal 3.0 and higher is required for LuisaCompute (detected: {}).",
+                 version);
+}
+
 MetalDevice::MetalDevice(Context &&ctx, const DeviceConfig *config) noexcept
     : DeviceInterface{std::move(ctx)}, _io{nullptr},
       _inqueue_buffer_limit{config == nullptr || config->inqueue_buffer_limit} {
 
-    {
-        auto o = MTL::CompileOptions::alloc()->init();
-        auto version = [o] {
-            using namespace std::string_view_literals;
-            switch (auto v [[maybe_unused]] = o->languageVersion()) {
-                case MTL::LanguageVersion1_0: return "1.0"sv;
-                case MTL::LanguageVersion1_1: return "1.1"sv;
-                case MTL::LanguageVersion1_2: return "1.2"sv;
-                case MTL::LanguageVersion2_0: return "2.0"sv;
-                case MTL::LanguageVersion2_1: return "2.1"sv;
-                case MTL::LanguageVersion2_2: return "2.2"sv;
-                case MTL::LanguageVersion2_3: return "2.3"sv;
-                case MTL::LanguageVersion2_4: return "2.4"sv;
-                default: break;
-            }
-            return "adequate"sv;
-        }();
-        o->release();
-        LUISA_ASSERT(version == "adequate",
-                     "Metal 3.0 and higher is required for LuisaCompute (detected: {}).",
-                     version);
-    }
-
+    check_if_metal3_supported();
     auto device_index = config == nullptr ||
                                 config->device_index == std::numeric_limits<size_t>::max() ?
                             0u :
@@ -310,8 +311,10 @@ void MetalDevice::destroy_buffer(uint64_t handle) noexcept {
 }
 
 ResourceCreationInfo MetalDevice::create_texture(PixelFormat format, uint dimension,
-                                                 uint width, uint height, uint depth, uint mipmap_levels,
+                                                 uint width, uint height, uint depth,
+                                                 uint mipmap_levels, void *external_native_handle,
                                                  bool allow_simultaneous_access, bool allow_raster_target) noexcept {
+    LUISA_ASSERT(external_native_handle == nullptr, "Not implemented.");
     return with_autorelease_pool([=, this] {
         auto texture = new_with_allocator<MetalTexture>(
             _handle, format, dimension, width, height, depth,
@@ -786,6 +789,8 @@ void MetalDevice::set_name(luisa::compute::Resource::Tag resource_tag,
             case Resource::Tag::SPARSE_TEXTURE: break;
             case Resource::Tag::SPARSE_BUFFER_HEAP: break;
             case Resource::Tag::SPARSE_TEXTURE_HEAP: break;
+            case Resource::Tag::MOTION_INSTANCE: break;
+            case Resource::Tag::TENSOR_GRAPH: break;
         }
     });
 }

@@ -35,12 +35,12 @@ public:
         luisa::string_view name,
         uint64_t targetSizeInBytes,
         D3D12_HEAP_TYPE heapType,
-        D3D12_HEAP_FLAGS extraFlags) const noexcept override ;
+        D3D12_HEAP_FLAGS extraFlags) const noexcept override;
     luisa::compute::DirectXHeap AllocateTextureHeap(
         vstd::string_view name,
         size_t sizeBytes,
         bool isRenderTexture,
-        D3D12_HEAP_FLAGS extraFlags) const noexcept override ;
+        D3D12_HEAP_FLAGS extraFlags) const noexcept override;
     void DeAllocateHeap(uint64_t handle) const noexcept override;
 };
 class Device {
@@ -78,7 +78,7 @@ public:
     DxPtr<IDXGIFactory2> dxgiFactory;
     vstd::unique_ptr<GpuAllocator> defaultAllocator;
     DXAllocatorImpl allocatorInterface;
-    
+
     vstd::unique_ptr<DescriptorHeap> globalHeap;
     vstd::unique_ptr<DescriptorHeap> samplerHeap;
     LazyLoadShader setBindlessKernel;
@@ -100,6 +100,7 @@ public:
     vstd::unique_ptr<ComputeShader> bc7_1;
     vstd::unique_ptr<ComputeShader> bc7_2;
     vstd::unique_ptr<ComputeShader> bc7_3;*/
+    bool use_enhanced_barrier{false};// for older system like win-10
     Device(luisa::compute::Context &&ctx, luisa::compute::DeviceConfig const *settings);
     Device(Device const &) = delete;
     Device(Device &&) = delete;

@@ -97,7 +97,7 @@ public:
               luisa::string_view native_include);
 
 public:
-    [[nodiscard]] auto print_formats() const noexcept { return luisa::span{_print_formats}; }
+    [[nodiscard]] auto move_print_formats() && noexcept { return std::move(_print_formats); }
 };
 
 }// namespace luisa::compute::cuda

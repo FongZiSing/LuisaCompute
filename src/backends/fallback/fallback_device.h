@@ -49,7 +49,10 @@ public:
     uint compute_warp_size() const noexcept override;
     BufferCreationInfo create_buffer(const Type *element, size_t elem_count, void *external_memory) noexcept override;
     BufferCreationInfo create_buffer(const ir::CArc<ir::Type> *element, size_t elem_count, void *external_memory) noexcept override;
-    ResourceCreationInfo create_texture(PixelFormat format, uint dimension, uint width, uint height, uint depth, uint mipmap_levels, bool simultaneous_access, bool allow_raster_target) noexcept override;
+    ResourceCreationInfo create_texture(PixelFormat format, uint dimension,
+                                        uint width, uint height, uint depth,
+                                        uint mipmap_levels, void *external_native_handle,
+                                        bool simultaneous_access, bool allow_raster_target) noexcept override;
     ResourceCreationInfo create_stream(StreamTag stream_tag) noexcept override;
     void dispatch(uint64_t stream_handle, CommandList &&list) noexcept override;
     void set_stream_log_callback(uint64_t stream_handle, const StreamLogCallback &callback) noexcept override;
@@ -81,7 +84,9 @@ public:
     void destroy_sparse_buffer(uint64_t handle) noexcept override;
     ResourceCreationInfo allocate_sparse_texture_heap(size_t byte_size, bool is_compressed_type) noexcept override;
     void deallocate_sparse_texture_heap(uint64_t handle) noexcept override;
-    SparseTextureCreationInfo create_sparse_texture(PixelFormat format, uint dimension, uint width, uint height, uint depth, uint mipmap_levels, bool simultaneous_access) noexcept override;
+    SparseTextureCreationInfo create_sparse_texture(PixelFormat format, uint dimension,
+                                                    uint width, uint height, uint depth,
+                                                    uint mipmap_levels, bool simultaneous_access) noexcept override;
     void destroy_sparse_texture(uint64_t handle) noexcept override;
     ResourceCreationInfo create_bindless_array(size_t size) noexcept override;
     ResourceCreationInfo create_event() noexcept override;

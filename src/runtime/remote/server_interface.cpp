@@ -102,12 +102,9 @@ void ServerInterface::create_texture(std::byte const *&ptr, luisa::vector<std::b
     auto simultaneous_access = SerDe::deser_value<uint>(ptr);
     auto raster = SerDe::deser_value<uint>(ptr);
     auto res = _impl->create_texture(
-        format,
-        dimension,
-        width, height,
-        depth, mipmap_levels,
-        simultaneous_access,
-        raster);
+        format, dimension, width, height,
+        depth, mipmap_levels, nullptr,
+        simultaneous_access, raster);
     insert_handle(frontend_handle, res.handle);
 }
 void ServerInterface::destroy_texture(std::byte const *&ptr, luisa::vector<std::byte> &result) noexcept {

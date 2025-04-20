@@ -79,6 +79,7 @@ public:
     }
     Curve &operator=(const Curve &) noexcept = delete;
     using Resource::operator bool;
+    using Resource::release;
 
 public:
     [[nodiscard]] CurveBasis basis() const noexcept;

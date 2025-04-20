@@ -20,6 +20,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
     Device device = context.create_device(argv[1]);
+    Image<float> device_image = device.create_image<float>(PixelStorage::BYTE4, 1024u, 1024u, 0u);
 
     Callable linear_to_srgb = [](Float4 linear) noexcept {
         auto x = linear.xyz();
@@ -30,26 +31,25 @@ int main(int argc, char *argv[]) {
             linear.w);
     };
 
-    Kernel2D fill_image_kernel = [&linear_to_srgb](ImageFloat image) noexcept {
+    Kernel2D fill_image_kernel = [&]() noexcept {
         Var coord = dispatch_id().xy();
         Var rg = make_float2(coord) / make_float2(dispatch_size().xy());
-        image.write(coord, linear_to_srgb(make_float4(rg, 1.0f, 1.0f)));
+        device_image->write(coord, linear_to_srgb(make_float4(rg, 1.0f, 1.0f)));
     };
 
-    Kernel2D change_color_kernel = [](ImageFloat image) noexcept {
+    Kernel2D change_color_kernel = [&]() noexcept {
         Var coord = dispatch_id().xy();
-        auto c = image.read(coord);
-        image.write(coord, make_float4(lerp(c.xyz(), 1.f, 0.2f), 1.0f));
+        auto c = device_image->read(coord);
+        device_image->write(coord, make_float4(lerp(c.xyz(), 1.f, 0.2f), 1.0f));
     };
 
     auto fill_image = device.compile(fill_image_kernel);
     auto change_color = device.compile(change_color_kernel);
-    Image<float> device_image = device.create_image<float>(PixelStorage::BYTE4, 1024u, 1024u, 0u);
     std::vector<std::byte> download_image(1024u * 1024u * 4u);
 
     Stream stream = device.create_stream();
-    stream << fill_image(device_image.view(0)).dispatch(1024u, 1024u)
-           << change_color(device_image.view(0)).dispatch(512u, 512u)
+    stream << fill_image().dispatch(1024u, 1024u)
+           << change_color().dispatch(512u, 512u)
            << device_image.copy_to(download_image.data())
            << synchronize();
     stbi_write_png("result.png", 1024u, 1024u, 4u, download_image.data(), 0u);

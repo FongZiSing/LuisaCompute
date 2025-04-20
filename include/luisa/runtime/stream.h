@@ -81,6 +81,7 @@ public:
     }
     Stream &operator=(Stream const &) noexcept = delete;
     using Resource::operator bool;
+    using Resource::release;
     Delegate operator<<(luisa::unique_ptr<Command> &&cmd) noexcept;
     Delegate operator<<(luisa::move_only_function<void()> &&f) noexcept;
     template<typename T>

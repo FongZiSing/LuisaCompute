@@ -36,7 +36,8 @@ public:
     SparseTexture(const SparseTexture &) noexcept = delete;
     SparseTexture &operator=(SparseTexture &&) noexcept = delete;// use _move_from in derived classes
     SparseTexture &operator=(const SparseTexture &) noexcept = delete;
-
+    using Resource::operator bool;
+    using Resource::release;
     [[nodiscard]] auto tile_size_bytes() const noexcept {
         _check_is_valid();
         return _tile_size_bytes;

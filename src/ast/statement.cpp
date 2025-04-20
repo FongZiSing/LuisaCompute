@@ -107,6 +107,17 @@ PrintStmt::PrintStmt(luisa::string fmt, luisa::vector<const Expression *> args) 
     for (auto arg : _args) { arg->mark(Usage::READ); }
 }
 
+uint64_t DebugBreakStmt::_compute_hash() const noexcept {
+    auto h = hash64_default_seed;
+    for (auto &&w : _watches) {
+        h = luisa::hash_value(w->hash(), h);
+    }
+    return h;
+}
+
+DebugBreakStmt::DebugBreakStmt(Wrapper *wrapper, luisa::vector<const Expression *> watches) noexcept
+    : Statement{Tag::DEBUG_BREAK}, _wrapper{wrapper}, _watches{std::move(watches)} {}
+
 void StmtVisitor::visit(const AutoDiffStmt *stmt) {
     // reports error by default since it should be
     // handled by the IR when reaching the backend
@@ -114,9 +125,15 @@ void StmtVisitor::visit(const AutoDiffStmt *stmt) {
 }
 
 void StmtVisitor::visit(const PrintStmt *stmt) {
-    // reports error by default since it should be
-    // handled by the IR when reaching the backend
+    // Not supporting the print statement is not
+    // critical, so we just log a warning.
     LUISA_WARNING_WITH_LOCATION("PrintStmt is not supported.");
+}
+
+void StmtVisitor::visit(const DebugBreakStmt *stmt) {
+    // Not supporting the debug break statement is not
+    // critical, so we just log a warning.
+    LUISA_WARNING_WITH_LOCATION("DebugBreakStmt is not supported.");
 }
 
 }// namespace luisa::compute

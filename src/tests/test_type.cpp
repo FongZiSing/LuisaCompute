@@ -5,14 +5,7 @@
 #include <atomic>
 #include <iostream>
 
-#include <luisa/core/logging.h>
-#include <luisa/core/stl/hash.h>
-#include <luisa/ast/type.h>
-#include <luisa/ast/type_registry.h>
-
-#include <luisa/ast/expression.h>
-#include <luisa/ast/statement.h>
-#include <luisa/ast/variable.h>
+#include <luisa/luisa-compute.h>
 
 struct S1 {
     float x;
@@ -76,6 +69,10 @@ template<typename T>
 requires concepts::container<T> void foo(T &&) noexcept {}
 
 struct Impl : public Interface {};
+
+class Something : public luisa::Managed<Something> {
+
+};
 
 std::string_view tag_name(Type::Tag tag) noexcept {
     using namespace std::string_view_literals;
@@ -164,5 +161,29 @@ int main() {
     foo<std::initializer_list<int>>({1, 2, 3, 4});
 
     auto [m, n] = std::array{1, 2};
+
+    auto sth = luisa::make_managed<Something>();
+    sth = sth;
+    sth = std::move(sth);
+    sth->set_managed_id(123);
+    {
+        auto another = sth;
+        luisa::ManagedPtr<const Something> good = std::move(another);
+        LUISA_ASSERT(nullptr == another);
+        auto gg = good.get();
+        LUISA_ASSERT(gg == sth);
+        auto ggg = gg->lock();
+        auto more = good->lock();
+        LUISA_ASSERT(sth == more);
+        more = std::move(ggg);
+        LUISA_ASSERT(more != nullptr);
+        good = more;
+        LUISA_ASSERT(good);
+        another = sth;
+    }
+
+    {
+        luisa::ManagedPtr<const Something> bad = std::move(sth);
+    }
 }
 

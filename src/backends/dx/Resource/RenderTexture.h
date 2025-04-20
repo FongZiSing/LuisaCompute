@@ -8,6 +8,7 @@ private:
     mutable vstd::unordered_map<uint, uint> uavIdcs;
     mutable vstd::unordered_map<uint, uint> srvIdcs;
     mutable std::mutex allocMtx;
+    bool allowSimul;
 
 public:
     RenderTexture(
@@ -30,6 +31,9 @@ public:
     }
     D3D12_RESOURCE_STATES GetInitState() const override {
         return D3D12_RESOURCE_STATE_COMMON;
+    }
+    bool AllowSimulAccess() const override {
+        return allowSimul;
     }
     D3D12_UNORDERED_ACCESS_VIEW_DESC GetColorUavDesc(uint targetMipLevel) const override;
     D3D12_RENDER_TARGET_VIEW_DESC GetRenderTargetDesc(uint mipOffset) const override;

@@ -2,12 +2,13 @@
 #include <Resource/Resource.h>
 #include <Resource/DefaultBuffer.h>
 #include <luisa/vstl/lockfree_array_queue.h>
+#include <DXRuntime/EnhancedBarrierTracker.h>
 #include <luisa/runtime/rhi/command.h>
 namespace lc::dx {
 using namespace luisa::compute;
 class TextureBase;
 class CommandBufferBuilder;
-class ResourceStateTracker;
+class EnhancedBarrierTracker;
 class BindlessArray final : public Resource {
 public:
     using Map = vstd::HashMap<size_t, size_t>;
@@ -57,11 +58,11 @@ public:
     void Bind(vstd::span<const BindlessArrayUpdateCommand::Modification> mods);
     void PreProcessStates(
         CommandBufferBuilder &builder,
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         vstd::span<const BindlessArrayUpdateCommand::Modification> mods) const;
     void UpdateStates(
         CommandBufferBuilder &builder,
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         vstd::span<const BindlessArrayUpdateCommand::Modification> mods) const;
 
     DefaultBuffer const *BindlessBuffer() const { return &buffer; }

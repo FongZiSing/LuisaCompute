@@ -184,7 +184,7 @@ void FunctionBuilder::assign(const Expression *lhs, const Expression *rhs) noexc
                 assign(local_var, expr);
                 return local_var;
             };
-            auto access_chain_decode = [&](auto &&access_chain_decode, Expression const *expr) -> Expression const * {
+            auto access_chain_decode = [&](auto &&self, Expression const *expr) -> Expression const * {
                 switch (expr->tag()) {
                     case Expression::Tag::MEMBER: {
                         auto mem = static_cast<MemberExpr const *>(expr);
@@ -192,7 +192,7 @@ void FunctionBuilder::assign(const Expression *lhs, const Expression *rhs) noexc
                             LUISA_ERROR("Can not use multiple swizzle write.");
                         }
                         auto mem_self = mem->self();
-                        auto new_self = access_chain_decode(access_chain_decode, mem_self);
+                        auto new_self = self(self, mem_self);
                         if (new_self != mem_self) {
                             return member(new_self->type(), new_self, mem->member_index());
                         }
@@ -200,18 +200,17 @@ void FunctionBuilder::assign(const Expression *lhs, const Expression *rhs) noexc
                     }
                     case Expression::Tag::ACCESS: {
                         auto access_expr = static_cast<AccessExpr const *>(expr);
-                        auto new_range = access_chain_decode(access_chain_decode, access_expr->range());
+                        auto new_range = self(self, access_expr->range());
                         if (non_trivial(access_expr->index())) {
                             return access(access_expr->type(), new_range, temp_var(access_expr->index()));
-                        } else if (new_range != access_expr->range()) {
+                        }
+                        if (new_range != access_expr->range()) {
                             return access(access_expr->type(), new_range, access_expr->index());
                         }
                         return access_expr;
                     }
                     case Expression::Tag::REF: return expr;
-                    default:
-                        LUISA_ERROR("Invalid swizzle");
-                        break;
+                    default: LUISA_ERROR("Invalid swizzle");
                 }
                 return nullptr;
             };
@@ -539,9 +538,9 @@ const RefExpr *FunctionBuilder::texture_binding(const Type *type, uint64_t handl
     return _ref(v);
 }
 
-const CallExpr *FunctionBuilder::call(const Type *type, CallOp call_op, std::initializer_list<const Expression *> args) noexcept {
+const CallExpr *FunctionBuilder::call(const Type *type, CallOp call_op, std::initializer_list<const Expression *> args, CurveBasisSet curve_basis_set) noexcept {
     luisa::vector<const Expression *> arg_list{args};
-    return call(type, call_op, arg_list);
+    return call(type, call_op, arg_list, curve_basis_set);
 }
 
 const CallExpr *FunctionBuilder::call(const Type *type, Function custom, std::initializer_list<const Expression *> args) noexcept {
@@ -655,7 +654,7 @@ const RefExpr *FunctionBuilder::accel() noexcept {
 }
 
 // call builtin functions
-const CallExpr *FunctionBuilder::call(const Type *type, CallOp call_op, luisa::span<const Expression *const> args) noexcept {
+const CallExpr *FunctionBuilder::call(const Type *type, CallOp call_op, luisa::span<const Expression *const> args, CurveBasisSet curve_basis_set) noexcept {
     if (call_op == CallOp::CUSTOM) [[unlikely]] {
         LUISA_ERROR_WITH_LOCATION(
             "Custom functions are not allowed to "
@@ -672,7 +671,7 @@ const CallExpr *FunctionBuilder::call(const Type *type, CallOp call_op, luisa::s
     CallExpr::ArgumentList internalized_args;
     internalized_args.reserve(args.size());
     for (auto arg : args) { internalized_args.emplace_back(_internalize(arg)); }
-    auto expr = _create_expression<CallExpr>(type, call_op, internalized_args);
+    auto expr = _create_expression<CallExpr>(type, call_op, internalized_args, curve_basis_set);
     if (type == nullptr) {
         _void_expr(expr);
         return nullptr;
@@ -816,10 +815,12 @@ const CallExpr *FunctionBuilder::call(const Type *type, Function custom, luisa::
     }
     return expr;
 }
+
 const CpuCustomOpExpr *FunctionBuilder::call(const Type *type, void (*f)(void *, void *), void (*dtor)(void *), void *data, const Expression *arg) noexcept {
     auto expr = _create_expression<CpuCustomOpExpr>(type, f, dtor, data, arg);
     return expr;
 }
+
 void FunctionBuilder::call(CallOp call_op, luisa::span<const Expression *const> args) noexcept {
     _void_expr(call(nullptr, call_op, args));
 }
@@ -843,11 +844,23 @@ void FunctionBuilder::print_(luisa::string format,
                              luisa::span<const Expression *const> args) noexcept {
     CallExpr::ArgumentList internalized_args;
     internalized_args.reserve(args.size());
-    for (auto arg : args) { internalized_args.emplace_back(_internalize(arg)); }
+    for (auto arg : args) {
+        internalized_args.emplace_back(_internalize(arg));
+    }
     _create_and_append_statement<PrintStmt>(
         std::move(format),
         std::move(internalized_args));
     _requires_printing = true;
+}
+
+void FunctionBuilder::debug_break_(DebugBreakStmt::Wrapper *wrapper,
+                                   luisa::span<const Expression *const> args) noexcept {
+    CallExpr::ArgumentList internalized_args;
+    internalized_args.reserve(args.size());
+    for (auto &&w : args) {
+        internalized_args.emplace_back(_internalize(w));
+    }
+    _create_and_append_statement<DebugBreakStmt>(std::move(wrapper), std::move(internalized_args));
 }
 
 void FunctionBuilder::set_block_size(uint3 size) noexcept {
@@ -1021,15 +1034,15 @@ const Expression *FunctionBuilder::_internalize(const Expression *expr) noexcept
             return expr;
         };
         auto internalize_rvalue = [this, external, mark_internalizer_argument] {
-            auto src = std::find(stack().crbegin(), stack().crend(), external->builder());
-            LUISA_ASSERT(src != stack().crend(),
+            auto src = std::find(stack().rbegin(), stack().rend(), external->builder());
+            LUISA_ASSERT(src != stack().rend(),
                          "Cannot internalize r-value expression "
                          "that is not on the stack.");
             return mark_internalizer_argument(argument(external->type()));
         };
         auto internalize_lvalue = [this, external, mark_internalizer_argument] {
-            auto src = std::find(stack().crbegin(), stack().crend(), external->builder());
-            auto on_stack = src != stack().crend();
+            auto src = std::find(stack().rbegin(), stack().rend(), external->builder());
+            auto on_stack = src != stack().rend();
             // if the external expression is not on the stack, we defer
             // the internalization until the full kernel is encoded
             if (!on_stack) {
@@ -1115,6 +1128,8 @@ const Expression *FunctionBuilder::_internalize(const Expression *expr) noexcept
             case Expression::Tag::GPUCUSTOM:
                 LUISA_ERROR_WITH_LOCATION(
                     "Cannot internalize GPU custom expression.");
+            case Expression::Tag::FUNC_REF: LUISA_ERROR_WITH_LOCATION(
+                "Cannot internalize function reference expression.");
         }
         LUISA_ERROR_WITH_LOCATION("Invalid expression to internalize.");
     }();

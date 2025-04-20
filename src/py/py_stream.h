@@ -11,7 +11,7 @@ class PyStream : public vstd::IOperatorNewBase {
     struct Disposer {
         void *ptr;
         vstd::func_ptr_t<void(void *ptr)> dtor;
-        Disposer() noexcept {}
+        Disposer() noexcept : ptr(nullptr), dtor(nullptr) {}
         Disposer(Disposer &&d) noexcept {
             ptr = d.ptr;
             d.ptr = nullptr;
@@ -20,7 +20,7 @@ class PyStream : public vstd::IOperatorNewBase {
         ~Disposer() noexcept {
             if (!ptr) return;
             dtor(ptr);
-            vengine_delete(ptr);
+            vengine_free(ptr);
         }
     };
 public:
@@ -37,7 +37,7 @@ private:
 
 public:
     [[nodiscard]] auto &data() const { return _data; }
-    Stream &stream() const { return _data->stream; }
+    [[nodiscard]] Stream &stream() const { return _data->stream; }
     PyStream(PyStream &&) noexcept;
     PyStream(PyStream const &) = delete;
     PyStream(Device &device, bool support_window) noexcept;
@@ -52,7 +52,7 @@ public:
         disp.ptr = vengine_malloc(sizeof(T));
         new (disp.ptr) T(std::move(t));
         disp.dtor = [](void *ptr) {
-            vstd::destruct(reinterpret_cast<T *>(ptr));
+            std::destroy_at(static_cast<T *>(ptr));
         };
     }
     void execute() noexcept;

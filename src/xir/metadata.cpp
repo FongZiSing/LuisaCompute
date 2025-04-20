@@ -2,6 +2,7 @@
 #include <luisa/xir/metadata/name.h>
 #include <luisa/xir/metadata/location.h>
 #include <luisa/xir/metadata/comment.h>
+#include <luisa/xir/metadata/curve_basis.h>
 #include <luisa/xir/metadata.h>
 
 namespace luisa::compute::xir {
@@ -30,6 +31,7 @@ Metadata *luisa_xir_metadata_list_mixin_create_metadata(MetadataList &list, Pool
         LUISA_XIR_MAKE_METADATA_CREATE_CASE(Name)
         LUISA_XIR_MAKE_METADATA_CREATE_CASE(Location)
         LUISA_XIR_MAKE_METADATA_CREATE_CASE(Comment)
+        LUISA_XIR_MAKE_METADATA_CREATE_CASE(CurveBasis)
 #undef LUISA_XIR_MAKE_METADATA_CREATE_CASE
     }
     LUISA_ERROR_WITH_LOCATION("Unknown derived metadata tag 0x{:x}.",

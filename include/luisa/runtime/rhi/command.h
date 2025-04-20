@@ -27,23 +27,25 @@ struct IndirectDispatchArg {
     uint32_t max_dispatch_size;
 };
 
+// clang-format off
 #define LUISA_COMPUTE_RUNTIME_COMMANDS   \
-    BufferUploadCommand,                 \
-        BufferDownloadCommand,           \
-        BufferCopyCommand,               \
-        BufferToTextureCopyCommand,      \
-        ShaderDispatchCommand,           \
-        TextureUploadCommand,            \
-        TextureDownloadCommand,          \
-        TextureCopyCommand,              \
-        TextureToBufferCopyCommand,      \
-        AccelBuildCommand,               \
-        MeshBuildCommand,                \
-        CurveBuildCommand,               \
-        ProceduralPrimitiveBuildCommand, \
-        MotionInstanceBuildCommand,      \
-        BindlessArrayUpdateCommand,      \
-        CustomCommand
+    BufferUploadCommand,             \
+    BufferDownloadCommand,           \
+    BufferCopyCommand,               \
+    BufferToTextureCopyCommand,      \
+    ShaderDispatchCommand,           \
+    TextureUploadCommand,            \
+    TextureDownloadCommand,          \
+    TextureCopyCommand,              \
+    TextureToBufferCopyCommand,      \
+    AccelBuildCommand,               \
+    MeshBuildCommand,                \
+    CurveBuildCommand,               \
+    ProceduralPrimitiveBuildCommand, \
+    MotionInstanceBuildCommand,      \
+    BindlessArrayUpdateCommand,      \
+    CustomCommand
+// clang-format on
 
 #define LUISA_MAKE_COMMAND_FWD_DECL(CMD) class CMD;
 LUISA_MAP(LUISA_MAKE_COMMAND_FWD_DECL, LUISA_COMPUTE_RUNTIME_COMMANDS)
@@ -719,6 +721,9 @@ public:
     ~CustomDispatchCommand() noexcept override = default;
 
     virtual void traverse_arguments(ArgumentVisitor &visitor) const noexcept = 0;
+
+    // For backend reorder
+    [[nodiscard]] virtual uint3 max_dispatch_size() const noexcept { return uint3{65535u * 32u}; }
 
     template<typename F>
         requires(!std::derived_from<std::remove_cvref_t<F>, ArgumentVisitor>)

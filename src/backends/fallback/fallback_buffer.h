@@ -16,11 +16,13 @@ struct alignas(16) FallbackBufferView {
 class FallbackBuffer {
 
 private:
-    size_t _size;
     std::byte *_data{};
+    size_t _size : 63;
+    size_t _is_external : 1;
 
 public:
-    explicit FallbackBuffer(size_t size);
+    explicit FallbackBuffer(size_t size) noexcept;
+    FallbackBuffer(std::byte *data, size_t size) noexcept;// create from external memory
     ~FallbackBuffer() noexcept;
     [[nodiscard]] auto data() noexcept { return _data; }
     [[nodiscard]] FallbackBufferView view(size_t offset, size_t size) noexcept;

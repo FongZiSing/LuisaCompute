@@ -47,6 +47,7 @@ public:
     Accel &operator=(Accel &&rhs) noexcept;
     Accel &operator=(Accel const &) noexcept = delete;
     using Resource::operator bool;
+    using Resource::release;
 
     // number of instances
     [[nodiscard]] size_t size() const noexcept;

@@ -17,6 +17,10 @@
 // Runtime depends on AST but this file is header only.
 #include <luisa/runtime/rhi/curve_basis.h>
 
+namespace luisa {
+class MemorySanitizer;
+}// namespace luisa
+
 namespace lc::validation {
 class Device;
 }// namespace lc::validation
@@ -39,6 +43,7 @@ class FunctionDuplicator;
  */
 class LC_AST_API FunctionBuilder : public luisa::enable_shared_from_this<FunctionBuilder> {
 
+    friend ::luisa::MemorySanitizer;
     friend class luisa::compute::CallableLibrary;
     friend class lc::validation::Device;
     friend class FunctionDuplicator;
@@ -189,7 +194,7 @@ public:
     [[nodiscard]] static FunctionBuilder *current() noexcept;
     [[nodiscard]] static FunctionBuilder *current_or_null() noexcept;
     [[nodiscard]] static luisa::span<const FunctionBuilder *const> stack() noexcept;
-    
+
     [[nodiscard]] auto hash_computed() const noexcept { return _hash_computed; }
     // interfaces for class Function
     /// Return a span of builtin variables.
@@ -345,7 +350,7 @@ public:
     // return function reference (not supported by some backend)
     [[nodiscard]] const FuncRefExpr *func_ref(Function custom) noexcept;
     /// Create call expression
-    [[nodiscard]] const CallExpr *call(const Type *type /* nullptr for void */, CallOp call_op, std::initializer_list<const Expression *> args) noexcept;
+    [[nodiscard]] const CallExpr *call(const Type *type /* nullptr for void */, CallOp call_op, std::initializer_list<const Expression *> args, CurveBasisSet curve_basis_set = {}) noexcept;
     /// Create call expression
     [[nodiscard]] const CallExpr *call(const Type *type /* nullptr for void */, Function custom, std::initializer_list<const Expression *> args) noexcept;
     // Create make_vecN call
@@ -356,7 +361,7 @@ public:
     /// Call custom function
     void call(Function custom, std::initializer_list<const Expression *> args) noexcept;
     /// Create call expression
-    [[nodiscard]] const CallExpr *call(const Type *type /* nullptr for void */, CallOp call_op, luisa::span<const Expression *const> args) noexcept;
+    [[nodiscard]] const CallExpr *call(const Type *type /* nullptr for void */, CallOp call_op, luisa::span<const Expression *const> args, CurveBasisSet curve_basis_set = {}) noexcept;
     /// Create call expression
     [[nodiscard]] const CallExpr *call(const Type *type /* nullptr for void */, Function custom, luisa::span<const Expression *const> args) noexcept;
     [[nodiscard]] const CpuCustomOpExpr *call(const Type *type, void (*f)(void *, void *), void (*dtor)(void *), void *data, const Expression *arg) noexcept;
@@ -409,6 +414,8 @@ public:
     [[nodiscard]] AutoDiffStmt *autodiff_() noexcept;
     /// Add print statement
     void print_(luisa::string format, luisa::span<const Expression *const> args) noexcept;
+    /// Add debug break statement
+    void debug_break_(DebugBreakStmt::Wrapper *wrapper, luisa::span<const Expression *const> watches) noexcept;
 
     // For autodiff use only
     [[nodiscard]] const Statement *pop_stmt() noexcept;

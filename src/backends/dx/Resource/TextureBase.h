@@ -34,6 +34,7 @@ public:
     uint Mip() const { return mip; }
     virtual uint GetGlobalSRVIndex(uint mipOffset = 0) const;
     virtual uint GetGlobalUAVIndex(uint mipLevel) const;
+    virtual bool AllowSimulAccess() const { return false; }
     virtual D3D12_SHADER_RESOURCE_VIEW_DESC GetColorSrvDesc(uint mipOffset = 0) const;
     virtual D3D12_UNORDERED_ACCESS_VIEW_DESC GetColorUavDesc(uint targetMipLevel) const;
     virtual D3D12_DEPTH_STENCIL_VIEW_DESC GetDepthDesc() const;

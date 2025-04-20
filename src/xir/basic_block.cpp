@@ -13,7 +13,7 @@ void BasicBlock::_do_traverse_predecessors(bool exclude_self, void *ctx, void (*
         LUISA_ASSERT(user != nullptr && user->isa<Instruction>(), "Invalid user of basic block.");
         auto user_block = static_cast<Instruction *>(user)->parent_block();
         LUISA_DEBUG_ASSERT(user_block != nullptr, "Invalid parent block.");
-        if ((!exclude_self || user_block != this) && user_block->isa<BasicBlock>()) {
+        if (!exclude_self || user_block != this) {
 #ifndef NDEBUG
             LUISA_ASSERT(std::find(visited.begin(), visited.end(), user_block) == visited.end(),
                          "Duplicate block in predecessor list.");

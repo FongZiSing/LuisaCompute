@@ -3,9 +3,10 @@
 #include <Resource/DefaultBuffer.h>
 #include <luisa/vstl/spin_mutex.h>
 #include <luisa/runtime/rhi/command.h>
+#include <DXRuntime/EnhancedBarrierTracker.h>
 namespace lc::dx {
 class CommandBufferBuilder;
-class ResourceStateTracker;
+class EnhancedBarrierTracker;
 class TopAccel;
 struct BottomAccelData {
     D3D12_RAYTRACING_GEOMETRY_DESC geometryDesc;
@@ -67,12 +68,12 @@ public:
         luisa::compute::AccelOption const &option);
     size_t PreProcessStates(
         CommandBufferBuilder &builder,
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         bool update,
         vstd::variant<MeshOptions, AABBOptions> const &options,
         BottomAccelData &bottomData);
     void UpdateStates(
-        ResourceStateTracker &tracker,
+        EnhancedBarrierTracker &tracker,
         CommandBufferBuilder &builder,
         BufferView const &scratchBuffer,
         BottomAccelData &accelData);

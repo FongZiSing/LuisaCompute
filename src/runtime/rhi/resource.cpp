@@ -55,4 +55,10 @@ void Resource::dispose() noexcept {
         _info.invalidate();
     }
 }
+
+ResourceCreationInfo Resource::release() noexcept {
+    auto info = _info;
+    _info.invalidate();
+    return info;
+}
 }// namespace luisa::compute

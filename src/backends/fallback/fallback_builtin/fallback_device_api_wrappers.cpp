@@ -811,4 +811,261 @@ LUISA_FALLBACK_WRAPPER float luisa_fallback_wrapper_atomic_fetch_max_float(float
     return __atomic_fetch_max(a, b, LUISA_FALLBACK_ATOMIC_MEMORY_ORDER);
 }
 
+// For shared memory atomics, we don't actually need to use atomic operations as one thread block maps to one CPU thread.
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_exchange_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a = b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_exchange_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a = b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_exchange_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a = b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_exchange_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a = b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER float luisa_fallback_wrapper_atomic_exchange_float_smem(float *a, float b) noexcept {
+    auto tmp = *a;
+    *a = b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_compare_exchange_int_smem(int *a, int b, int c) noexcept {
+    auto tmp = *a;
+    if (*a == b) { *a = c; }
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_compare_exchange_uint_smem(uint *a, uint b, uint c) noexcept {
+    auto tmp = *a;
+    if (*a == b) { *a = c; }
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_compare_exchange_long_smem(int64_t *a, int64_t b, int64_t c) noexcept {
+    auto tmp = *a;
+    if (*a == b) { *a = c; }
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_compare_exchange_ulong_smem(uint64_t *a, uint64_t b, uint64_t c) noexcept {
+    auto tmp = *a;
+    if (*a == b) { *a = c; }
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER float luisa_fallback_wrapper_atomic_compare_exchange_float_smem(float *a, float b, float c) noexcept {
+    auto tmp = *a;
+    if (*a == b) { *a = c; }
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_fetch_add_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a += b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_fetch_add_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a += b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_fetch_add_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a += b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_fetch_add_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a += b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER float luisa_fallback_wrapper_atomic_fetch_add_float_smem(float *a, float b) noexcept {
+    auto tmp = *a;
+    *a += b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_fetch_sub_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a -= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_fetch_sub_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a -= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_fetch_sub_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a -= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_fetch_sub_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a -= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER float luisa_fallback_wrapper_atomic_fetch_sub_float_smem(float *a, float b) noexcept {
+    auto tmp = *a;
+    *a -= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_fetch_and_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a &= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_fetch_and_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a &= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_fetch_and_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a &= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_fetch_and_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a &= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_fetch_or_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a |= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_fetch_or_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a |= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_fetch_or_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a |= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_fetch_or_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a |= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_fetch_xor_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a ^= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_fetch_xor_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a ^= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_fetch_xor_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a ^= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_fetch_xor_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a ^= b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_fetch_min_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a = *a < b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_fetch_min_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a = *a < b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_fetch_min_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a = *a < b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_fetch_min_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a = *a < b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER float luisa_fallback_wrapper_atomic_fetch_min_float_smem(float *a, float b) noexcept {
+    auto tmp = *a;
+    *a = *a < b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int luisa_fallback_wrapper_atomic_fetch_max_int_smem(int *a, int b) noexcept {
+    auto tmp = *a;
+    *a = *a > b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint luisa_fallback_wrapper_atomic_fetch_max_uint_smem(uint *a, uint b) noexcept {
+    auto tmp = *a;
+    *a = *a > b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER int64_t luisa_fallback_wrapper_atomic_fetch_max_long_smem(int64_t *a, int64_t b) noexcept {
+    auto tmp = *a;
+    *a = *a > b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER uint64_t luisa_fallback_wrapper_atomic_fetch_max_ulong_smem(uint64_t *a, uint64_t b) noexcept {
+    auto tmp = *a;
+    *a = *a > b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER float luisa_fallback_wrapper_atomic_fetch_max_float_smem(float *a, float b) noexcept {
+    auto tmp = *a;
+    *a = *a > b ? *a : b;
+    return tmp;
+}
+
+LUISA_FALLBACK_WRAPPER void luisa_fallback_wrapper_debug_break_trap() noexcept {
+    __builtin_debugtrap();
+}
+
 }

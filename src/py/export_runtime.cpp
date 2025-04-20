@@ -628,7 +628,7 @@ void export_runtime(py::module &m) {
             BinaryFileStream file_stream{luisa::string{path}};
             luisa::vector<std::byte> vec;
             if (file_stream.valid()) {
-                vec.push_back_uninitialized(file_stream.length());
+                luisa::enlarge_by(vec, file_stream.length());
                 file_stream.read(vec);
             }
             self.load(vec);

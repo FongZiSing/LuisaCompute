@@ -1,5 +1,5 @@
-if get_config("vk_backend") or get_config("dx_backend") then
-    includes("hlsl/builtin")
+if (get_config("vk_backend") or get_config("dx_backend")) and is_host("windows") then
+    includes("hlsl")
 end
 if get_config("_lc_vk_sdk_dir") and (get_config("cuda_backend") or get_config("cpu_backend")) then
     target("lc-vulkan-swapchain")

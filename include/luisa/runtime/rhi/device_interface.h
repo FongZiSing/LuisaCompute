@@ -115,17 +115,18 @@ public:
 public:
     [[nodiscard]] virtual BufferCreationInfo create_buffer(const Type *element,
                                                            size_t elem_count,
-                                                           void *external_memory /* nullptr if now imported from external memory */) noexcept = 0;
+                                                           void *external_memory /* nullptr if not imported from external memory */) noexcept = 0;
     [[nodiscard]] virtual BufferCreationInfo create_buffer(const ir::CArc<ir::Type> *element,
                                                            size_t elem_count,
-                                                           void *external_memory /* nullptr if now imported from external memory */) noexcept = 0;
+                                                           void *external_memory /* nullptr if not imported from external memory */) noexcept = 0;
     virtual void destroy_buffer(uint64_t handle) noexcept = 0;
 
     // texture
     [[nodiscard]] virtual ResourceCreationInfo create_texture(
         PixelFormat format, uint dimension,
         uint width, uint height, uint depth,
-        uint mipmap_levels, bool simultaneous_access, bool allow_raster_target) noexcept = 0;
+        uint mipmap_levels, void *external_native_handle,
+        bool simultaneous_access, bool allow_raster_target) noexcept = 0;
     virtual void destroy_texture(uint64_t handle) noexcept = 0;
 
     // bindless array

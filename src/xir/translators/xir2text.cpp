@@ -25,6 +25,7 @@
 #include <luisa/xir/instructions/outline.h>
 #include <luisa/xir/instructions/phi.h>
 #include <luisa/xir/instructions/print.h>
+#include <luisa/xir/instructions/debug_break.h>
 #include <luisa/xir/instructions/ray_query.h>
 #include <luisa/xir/instructions/raster_discard.h>
 #include <luisa/xir/instructions/return.h>
@@ -36,6 +37,7 @@
 #include <luisa/xir/metadata/comment.h>
 #include <luisa/xir/metadata/location.h>
 #include <luisa/xir/metadata/name.h>
+#include <luisa/xir/metadata/curve_basis.h>
 #include <luisa/xir/passes/dom_tree.h>
 #include <luisa/xir/translators/xir2text.h>
 
@@ -214,22 +216,7 @@ private:
     }
 
     static void _emit_string_escaped(StringScratch &ss, luisa::string_view s) noexcept {
-        ss << "\"";
-        for (auto c : s) {
-            if (isprint(c)) {
-                switch (c) {
-                    case '\n': ss << "\\n"; break;
-                    case '\r': ss << "\\r"; break;
-                    case '\t': ss << "\\t"; break;
-                    case '\"': ss << "\\\""; break;
-                    case '\\': ss << "\\\\"; break;
-                    default: ss << luisa::string_view{&c, 1}; break;
-                }
-            } else {
-                ss << "\\x" << (c >> 4u) << (c & 0x0fu);
-            }
-        }
-        ss << "\"";
+        luisa::format_to(std::back_inserter(ss.string()), "{:?}", s);
     }
 
     void _emit_operands(const Instruction *inst) noexcept {
@@ -382,9 +369,9 @@ private:
 
     void _emit_alloca_inst(const AllocaInst *inst) noexcept {
         _main << "alloca ";
-        switch (inst->space()) {
-            case AllocSpace::LOCAL: _main << "local"; break;
-            case AllocSpace::SHARED: _main << "shared"; break;
+        switch (inst->op()) {
+            case AllocaOp::LOCAL: _main << "local"; break;
+            case AllocaOp::SHARED: _main << "shared"; break;
         }
     }
 
@@ -435,6 +422,11 @@ private:
         _main << "print ";
         _emit_string_escaped(_main, inst->format());
         _main << " ";
+        _emit_operands(inst);
+    }
+
+    void _emit_debug_break_inst(const DebugBreakInst *inst) noexcept {
+        _main << "debug_break ";
         _emit_operands(inst);
     }
 
@@ -587,6 +579,9 @@ private:
                 break;
             case DerivedInstructionTag::RESOURCE_WRITE:
                 _emit_resource_write_inst(static_cast<const ResourceWriteInst *>(inst));
+                break;
+            case DerivedInstructionTag::DEBUG_BREAK:
+                _emit_debug_break_inst(static_cast<const DebugBreakInst *>(inst));
                 break;
         }
         _main << ";";
@@ -783,6 +778,32 @@ private:
         _emit_string_escaped(s, m.comment());
     }
 
+    static void _emit_curve_basis_metadata(StringScratch &s, const CurveBasisMD &m) noexcept {
+        s << "curve_basis = {";
+        auto any_basis = false;
+        if (m.curve_basis_set().test(CurveBasis::PIECEWISE_LINEAR)) {
+            any_basis = true;
+            s << "piecewise_linear, ";
+        }
+        if (m.curve_basis_set().test(CurveBasis::CUBIC_BSPLINE)) {
+            any_basis = true;
+            s << "cubic_bspline, ";
+        }
+        if (m.curve_basis_set().test(CurveBasis::CATMULL_ROM)) {
+            any_basis = true;
+            s << "catmull_rom, ";
+        }
+        if (m.curve_basis_set().test(CurveBasis::BEZIER)) {
+            any_basis = true;
+            s << "bezier, ";
+        }
+        if (any_basis) {
+            s.pop_back();
+            s.pop_back();
+        }
+        s << "}";
+    }
+
     template<typename T>
     static void _emit_metadata_list(StringScratch &s, const T &m) noexcept {
         s << "[";
@@ -796,6 +817,9 @@ private:
                     break;
                 case DerivedMetadataTag::COMMENT:
                     _emit_comment_metadata(s, static_cast<const CommentMD &>(item));
+                    break;
+                case DerivedMetadataTag::CURVE_BASIS:
+                    _emit_curve_basis_metadata(s, static_cast<const CurveBasisMD &>(item));
                     break;
                 default: LUISA_NOT_IMPLEMENTED();
             }

@@ -62,6 +62,7 @@ if (WIN32)
                 m128_u32=vector4_u32)
     endif ()
 
+    # for inter-op
     find_package(CUDAToolkit 11.7 QUIET)
     if (CUDAToolkit_FOUND)
         target_link_libraries(luisa-compute-backend-dx PRIVATE CUDA::cuda_driver)

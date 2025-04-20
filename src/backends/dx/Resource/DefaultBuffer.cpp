@@ -6,42 +6,52 @@ DefaultBuffer::DefaultBuffer(
     GpuAllocator *allocator,
     D3D12_RESOURCE_STATES initState,
     bool shared_adaptor,
-    char const* name)
+    char const *name)
     : Buffer(device),
       allocHandle(allocator),
       byteSize(byteSize),
       initState(initState) {
+    auto flag = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (initState == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE && device->use_enhanced_barrier) {
+        flag |= D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE;
+    }
     if (allocator) {
         ID3D12Heap *heap;
         uint64 offset;
         allocHandle.allocateHandle = allocHandle.allocator->AllocateBufferHeap(
             device, name ? name : "default buffer", byteSize, D3D12_HEAP_TYPE_DEFAULT, &heap, &offset,
             shared_adaptor ? D3D12_HEAP_FLAG_SHARED : D3D12_HEAP_FLAG_NONE);
-        auto buffer = CD3DX12_RESOURCE_DESC::Buffer(byteSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        ThrowIfFailed(device->device->CreatePlacedResource(
-            heap, offset,
-            &buffer,
-            initState,
-            nullptr,
-            IID_PPV_ARGS(&allocHandle.resource)));
+        auto buffer = CD3DX12_RESOURCE_DESC::Buffer(byteSize, flag);
+        auto func = [&]() {
+            return device->device->CreatePlacedResource(
+                heap, offset,
+                &buffer,
+                initState,
+                nullptr,
+                IID_PPV_ARGS(&allocHandle.resource));
+        };
+        ThrowIfFailed(func());
         _is_heap_resource = true;
     } else {
         auto prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-        auto buffer = CD3DX12_RESOURCE_DESC::Buffer(byteSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        ThrowIfFailed(device->device->CreateCommittedResource(
-            &prop,
-            shared_adaptor ? D3D12_HEAP_FLAG_SHARED : D3D12_HEAP_FLAG_NONE,
-            &buffer,
-            initState,
-            nullptr,
-            IID_PPV_ARGS(&allocHandle.resource)));
+        auto buffer = CD3DX12_RESOURCE_DESC::Buffer(byteSize, flag);
+        auto func = [&]() {
+            return device->device->CreateCommittedResource(
+                &prop,
+                shared_adaptor ? D3D12_HEAP_FLAG_SHARED : D3D12_HEAP_FLAG_NONE,
+                &buffer,
+                initState,
+                nullptr,
+                IID_PPV_ARGS(&allocHandle.resource));
+        };
+        ThrowIfFailed(func());
         _is_heap_resource = false;
     }
 }
 DefaultBuffer::DefaultBuffer(
     Device *device,
     uint64 byteSize,
-    ID3D12Resource* resource,
+    ID3D12Resource *resource,
     D3D12_RESOURCE_STATES initState)
     : Buffer(device),
       allocHandle(nullptr),

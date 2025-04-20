@@ -18,9 +18,9 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 if [[ "$ARCH" == "x86_64" ]]; then
     dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
     dnf clean expire-cache
-    dnf install -y cuda-toolkit-12-8
+    dnf install -y cuda-toolkit-12-4 # CUDA 12.4 for compatibility
 elif [[ "$ARCH" == "aarch64" ]]; then
     dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/sbsa/cuda-rhel8.repo
     dnf clean expire-cache
-    dnf install -y cuda-toolkit-12-8
+    dnf install -y cuda-toolkit-12-4 # CUDA 12.4 for compatibility
 fi

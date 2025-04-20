@@ -125,7 +125,7 @@ template<typename T>
         auto dst = memory + y_begin * padded_w;
         for (auto y = y_begin; y < y_begin + scanline_height; y++) {
             for (auto x = 0u; x < size.x; x++) {
-                *(dst++) = view.read2d<T>(luisa::min(make_uint2(x, y), size - 1u));
+                *(dst++) = view.template read2d<T>(luisa::min(make_uint2(x, y), size - 1u));
             }
         }
     });

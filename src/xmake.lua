@@ -47,3 +47,4 @@ end
 add_requires("zlib >=1.2.8-skr", {
     system = false
 })
+-- includes("tensor")

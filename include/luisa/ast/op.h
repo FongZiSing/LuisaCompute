@@ -203,15 +203,14 @@ enum struct CallOp : uint32_t {
     BINDLESS_TEXTURE3D_SAMPLE_GRAD_SAMPLER,      // (bindless_array, index: uint, uv: float3, ddx: float3, ddy: float3, filter: uint, address: uint): float4
     BINDLESS_TEXTURE3D_SAMPLE_GRAD_LEVEL_SAMPLER,// (bindless_array, index: uint, uv: float3, ddx: float3, ddy: float3,  mip_clamp: float, filter: uint, address: uint): float4
 
-
-    BINDLESS_TEXTURE2D_READ,             // (bindless_array, index: uint, coord: uint2): float4
-    BINDLESS_TEXTURE3D_READ,             // (bindless_array, index: uint, coord: uint3): float4
-    BINDLESS_TEXTURE2D_READ_LEVEL,       // (bindless_array, index: uint, coord: uint2, level: uint): float4
-    BINDLESS_TEXTURE3D_READ_LEVEL,       // (bindless_array, index: uint, coord: uint3, level: uint): float4
-    BINDLESS_TEXTURE2D_SIZE,             // (bindless_array, index: uint): uint2
-    BINDLESS_TEXTURE3D_SIZE,             // (bindless_array, index: uint): uint3
-    BINDLESS_TEXTURE2D_SIZE_LEVEL,       // (bindless_array, index: uint, level: uint): uint2
-    BINDLESS_TEXTURE3D_SIZE_LEVEL,       // (bindless_array, index: uint, level: uint): uint3
+    BINDLESS_TEXTURE2D_READ,      // (bindless_array, index: uint, coord: uint2): float4
+    BINDLESS_TEXTURE3D_READ,      // (bindless_array, index: uint, coord: uint3): float4
+    BINDLESS_TEXTURE2D_READ_LEVEL,// (bindless_array, index: uint, coord: uint2, level: uint): float4
+    BINDLESS_TEXTURE3D_READ_LEVEL,// (bindless_array, index: uint, coord: uint3, level: uint): float4
+    BINDLESS_TEXTURE2D_SIZE,      // (bindless_array, index: uint): uint2
+    BINDLESS_TEXTURE3D_SIZE,      // (bindless_array, index: uint): uint3
+    BINDLESS_TEXTURE2D_SIZE_LEVEL,// (bindless_array, index: uint, level: uint): uint2
+    BINDLESS_TEXTURE3D_SIZE_LEVEL,// (bindless_array, index: uint, level: uint): uint3
 
     BINDLESS_BUFFER_READ,     // (bindless_array, index: uint, elem_index: uint): expr->type()
     BINDLESS_BUFFER_WRITE,    // (bindless_array, index: uint, elem_index: uint, value: expr): void
@@ -374,10 +373,14 @@ enum struct CallOp : uint32_t {
     SHADER_EXECUTION_REORDER,// (uint hint, uint hint_bits): void
 
     // Clock
-    CLOCK, // (): uint64
+    CLOCK,// (): uint64
 };
 
 static constexpr size_t call_op_count = to_underlying(CallOp::CLOCK) + 1u;
+
+[[nodiscard]] constexpr auto is_builtin_operation(CallOp op) noexcept {
+    return op != CallOp::CUSTOM && op != CallOp::EXTERNAL;
+}
 
 [[nodiscard]] constexpr auto is_atomic_operation(CallOp op) noexcept {
     auto op_value = luisa::to_underlying(op);

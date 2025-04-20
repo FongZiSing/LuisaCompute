@@ -59,9 +59,8 @@ private:
                          detail::volume_size_zero_error();
                      }
                      return device->create_texture(
-                         pixel_storage_to_format<T>(storage), 3u,
-                         size.x, size.y, size.z,
-                         detail::max_mip_levels(size, mip_levels),
+                         pixel_storage_to_format<T>(storage), 3u, size.x, size.y, size.z,
+                         detail::max_mip_levels(size, mip_levels), nullptr,
                          simultaneous_access, allow_raster_target);
                  }(),
                  storage, size, mip_levels} {}
@@ -79,6 +78,7 @@ public:
         return *this;
     }
     Volume &operator=(Volume const &) noexcept = delete;
+    using Resource::release;
     // properties
     [[nodiscard]] auto mip_levels() const noexcept {
         _check_is_valid();

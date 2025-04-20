@@ -73,8 +73,7 @@ template<typename T>
 constexpr bool is_valid_buffer_element_v =
     std::is_same_v<T, std::remove_cvref_t<T>> &&
     std::is_trivially_copyable_v<T> &&
-    std::is_trivially_destructible_v<T> &&
-    (alignof(T) >= 4u);
+    std::is_trivially_destructible_v<T>;
 
 // Buffer is a one-dimensional data structure that can be of any base data type, such as int, float2, struct or array
 template<typename T>
@@ -141,6 +140,7 @@ public:
     [[nodiscard]] auto view(size_t offset, size_t count) const noexcept {
         return view().subview(offset, count);
     }
+#ifndef LUISA_ENABLE_SAFE_MODE
     // commands
     // copy buffer's data to pointer
     [[nodiscard]] auto copy_to(void *data) const noexcept {
@@ -169,10 +169,18 @@ public:
     [[nodiscard]] auto copy_from(const ByteBufferView &source) const noexcept {
         return this->view().copy_from(source);
     }
+#endif
     // DSL interface
     [[nodiscard]] auto operator->() const noexcept {
         _check_is_valid();
         return reinterpret_cast<const detail::BufferExprProxy<Buffer<T>> *>(this);
+    }
+    BufferCreationInfo release() noexcept {
+        return BufferCreationInfo{
+            Resource::release(),
+            _element_stride,
+            _size * sizeof(T)
+        };
     }
 };
 

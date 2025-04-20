@@ -7,7 +7,7 @@ if is_plat("macosx") then
 else
     _config_project({
         project_kind = "static",
-        no_rtti = true,
+--         no_rtti = true,
         batch_size = 4
     })
     add_defines("LUISA_VSTL_STATIC_LIB", {

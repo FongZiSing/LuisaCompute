@@ -10,6 +10,7 @@ enum struct DerivedMetadataTag {
     NAME,
     LOCATION,
     COMMENT,
+    CURVE_BASIS,
 };
 
 class LC_XIR_API Metadata : public IntrusiveForwardNode<Metadata> {

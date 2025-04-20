@@ -69,9 +69,22 @@ private:
                         detail::image_size_zero_error();
                     }
                     return device->create_texture(
-                        pixel_storage_to_format<T>(storage), 2u,
-                        size.x, size.y, 1u,
-                        detail::max_mip_levels(make_uint3(size, 1u), mip_levels),
+                        pixel_storage_to_format<T>(storage), 2u, size.x, size.y, 1u,
+                        detail::max_mip_levels(make_uint3(size, 1u), mip_levels), nullptr,
+                        simultaneous_access, allow_raster_target);
+                }(),
+                storage, size, mip_levels} {}
+
+    Image(DeviceInterface *device, PixelStorage storage, void *external_native_handle, uint2 size,
+          uint mip_levels, bool simultaneous_access = false, bool allow_raster_target = false) noexcept
+        : Image{device,
+                [&] {
+                    if (size.x == 0 || size.y == 0) [[unlikely]] {
+                        detail::image_size_zero_error();
+                    }
+                    return device->create_texture(
+                        pixel_storage_to_format<T>(storage), 2u, size.x, size.y, 1u,
+                        detail::max_mip_levels(make_uint3(size, 1u), mip_levels), external_native_handle,
                         simultaneous_access, allow_raster_target);
                 }(),
                 storage, size, mip_levels} {}
@@ -82,6 +95,7 @@ public:
         if (*this) { device()->destroy_texture(handle()); }
     }
     using Resource::operator bool;
+    using Resource::release;
     Image(Image &&) noexcept = default;
     Image(Image const &) noexcept = delete;
     Image &operator=(Image &&rhs) noexcept {

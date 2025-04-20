@@ -8,13 +8,15 @@ namespace luisa::compute::xir {
 Value::Value(const Type *type) noexcept : _type{type} {}
 
 void Value::replace_all_uses_with(Value *value) noexcept {
-    while (!_use_list.empty()) {
-        auto use = &_use_list.front();
-        LUISA_DEBUG_ASSERT(use->value() == this, "Invalid use.");
-        LUISA_DEBUG_ASSERT(value == nullptr || pool() == value->pool(), "Use and value should be in the same pool.");
-        use->remove_self();
-        use->set_value(value);
-        if (value) { use->add_to_list(value->use_list()); }
+    if (value != this) {
+        while (!_use_list.empty()) {
+            auto use = &_use_list.front();
+            LUISA_DEBUG_ASSERT(use->value() == this, "Invalid use.");
+            LUISA_DEBUG_ASSERT(value == nullptr || pool() == value->pool(), "Use and value should be in the same pool.");
+            use->remove_self();
+            use->set_value(value);
+            if (value) { use->add_to_list(value->use_list()); }
+        }
     }
 }
 

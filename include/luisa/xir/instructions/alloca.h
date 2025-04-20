@@ -4,22 +4,13 @@
 
 namespace luisa::compute::xir {
 
-enum struct AllocSpace {
-    LOCAL,
-    SHARED,
-};
-
-class LC_XIR_API AllocaInst final : public DerivedInstruction<AllocaInst, DerivedInstructionTag::ALLOCA> {
-
-private:
-    AllocSpace _space;
-
+class LC_XIR_API AllocaInst final : public InstructionOpMixin<AllocaOp, DerivedInstruction<AllocaInst, DerivedInstructionTag::ALLOCA>> {
 public:
-    AllocaInst(BasicBlock *parent_block, const Type *type, AllocSpace space) noexcept;
+    AllocaInst(BasicBlock *parent_block, const Type *type, AllocaOp op) noexcept;
+    [[nodiscard]] auto is_local() const noexcept { return op() == AllocaOp::LOCAL; }
+    [[nodiscard]] auto is_shared() const noexcept { return op() == AllocaOp::SHARED; }
     [[nodiscard]] bool is_lvalue() const noexcept override { return true; }
-    void set_space(AllocSpace space) noexcept;
-    [[nodiscard]] auto space() const noexcept { return _space; }
-    [[nodiscard]] AllocaInst *clone(Builder &b, InstructionCloneValueResolver &resolver) const noexcept override;
+    [[nodiscard]] AllocaInst *clone(XIRBuilder &b, InstructionCloneValueResolver &resolver) const noexcept override;
 };
 
 }// namespace luisa::compute::xir

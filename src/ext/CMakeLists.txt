@@ -1,5 +1,8 @@
 add_library(luisa-compute-ext INTERFACE)
 
+find_package(Threads REQUIRED)
+target_link_libraries(luisa-compute-ext INTERFACE Threads::Threads)
+
 add_custom_target(luisa-compute-ext-copy ALL
         COMMENT "Copy necessary files for third-party libraries")
 add_dependencies(luisa-compute-ext-copy luisa-compute-ext)
@@ -96,23 +99,34 @@ if (LUISA_COMPUTE_ENABLE_GUI)
     luisa_compute_install_extension(glfw)
 endif ()
 
-add_subdirectory(EASTL)
-set_target_properties(EASTL-object PROPERTIES UNITY_BUILD ${LUISA_COMPUTE_ENABLE_UNITY_BUILD})
-target_link_libraries(luisa-compute-ext INTERFACE EASTL-interface)
-luisa_compute_install_extension(EASTL-interface INCLUDE EASTL/include/EASTL)
-luisa_compute_install_extension(EABase INCLUDE EASTL/packages/EABase/include/Common/EABase)
-target_compile_features(EASTL-interface INTERFACE cxx_std_20)
-# silence deprecation warnings from EASTL for now (we will fix them when the upstream does)
-target_compile_definitions(EASTL-interface INTERFACE EASTL_DEPRECATIONS_FOR_2024_APRIL=EA_DISABLED)
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
-        CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0)
-    target_compile_options(EASTL-interface INTERFACE -Wno-deprecated-builtins)
+if (LUISA_COMPUTE_USE_SYSTEM_STL)
+    target_compile_definitions(luisa-compute-ext INTERFACE LUISA_USE_SYSTEM_STL=1)
+else ()
+    add_subdirectory(EASTL)
+    set_target_properties(EASTL-object PROPERTIES UNITY_BUILD ${LUISA_COMPUTE_ENABLE_UNITY_BUILD})
+    target_link_libraries(luisa-compute-ext INTERFACE EASTL-interface)
+    luisa_compute_install_extension(EASTL-interface INCLUDE EASTL/include/EASTL)
+    luisa_compute_install_extension(EABase INCLUDE EASTL/packages/EABase/include/Common/EABase)
+    target_compile_features(EASTL-interface INTERFACE cxx_std_20)
+    # silence deprecation warnings from EASTL for now (we will fix them when the upstream does)
+    target_compile_definitions(EASTL-interface INTERFACE EASTL_DEPRECATIONS_FOR_2024_APRIL=EA_DISABLED)
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+            CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0)
+        target_compile_options(EASTL-interface INTERFACE -Wno-deprecated-builtins)
+    endif ()
 endif ()
 
 add_library(half INTERFACE)
 target_include_directories(half INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/half/include>)
 target_link_libraries(luisa-compute-ext INTERFACE half)
 luisa_compute_install_extension(half HEADER_FILES half/include/half.hpp)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 20.0)
+    target_compile_options(half INTERFACE
+            -Wno-invalid-specialization
+            -Wno-deprecated-literal-operator
+            -Wno-elaborated-enum-base
+    )
+endif ()
 
 # reproc
 set(REPROC_DEVELOP OFF CACHE BOOL "" FORCE)
@@ -170,7 +184,6 @@ endif ()
 add_library(luisa-compute-ext-marl-interface INTERFACE)
 target_include_directories(luisa-compute-ext-marl-interface INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/marl/include>)
-target_link_libraries(luisa-compute-ext-marl-interface INTERFACE EASTL-interface)
 target_compile_definitions(luisa-compute-ext-marl-interface INTERFACE MARL_DLL=1)
 target_link_libraries(luisa-compute-ext INTERFACE luisa-compute-ext-marl-interface)
 luisa_compute_install_extension(luisa-compute-ext-marl-interface INCLUDE marl/include/marl)
@@ -182,8 +195,14 @@ file(GLOB LUISA_COMPUTE_MARL_CXX_SOURCES CONFIGURE_DEPENDS marl/src/*.cpp)
 # remove the manual unity build file "build.marl.cpp" and let CMake handle it
 list(FILTER LUISA_COMPUTE_MARL_CXX_SOURCES EXCLUDE REGEX ".*build.marl.cpp$")
 add_library(luisa-compute-ext-marl OBJECT ${LUISA_COMPUTE_MARL_HEADERS} ${LUISA_COMPUTE_MARL_CXX_SOURCES})
+if (LUISA_COMPUTE_USE_SYSTEM_STL)
+    target_compile_definitions(luisa-compute-ext-marl-interface INTERFACE MARL_USE_SYSTEM_STL=1)
+else ()
+    target_link_libraries(luisa-compute-ext-marl-interface INTERFACE EASTL-interface)
+endif ()
 target_compile_definitions(luisa-compute-ext-marl PRIVATE MARL_BUILDING_DLL=1)
-target_link_libraries(luisa-compute-ext-marl PRIVATE EASTL-interface luisa-compute-ext-marl-interface)
+target_link_libraries(luisa-compute-ext-marl PRIVATE luisa-compute-ext-marl-interface)
+
 set_target_properties(luisa-compute-ext-marl PROPERTIES UNITY_BUILD ${LUISA_COMPUTE_ENABLE_UNITY_BUILD})
 if (NOT WIN32)
     enable_language(ASM)

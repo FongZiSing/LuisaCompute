@@ -96,9 +96,6 @@ class DxGraphBuildCommand final : public DXCustomCmd {
 public:
     DxGraphBuildCommand(DxDMLGraph *graph) : dmlGraph(graph) {}
     LUISA_MAKE_COMMAND_COMMON(StreamTag::COMPUTE)
-    [[nodiscard]] luisa::span<const ResourceUsage> get_resource_usages() const noexcept override {
-        return {};
-    }
 
 private:
     DxDMLGraph *dmlGraph;
@@ -291,8 +288,8 @@ void DxGraphBuildCommand::execute(IDXGIAdapter1 *adapter, IDXGIFactory2 *dxgi_fa
 }
 
 class DxGraphForwardCommand final : public DXCustomCmd {
-    luisa::vector<ResourceUsage> resource_usages;
-    luisa::span<const ResourceUsage> get_resource_usages() const noexcept override {
+    luisa::vector<EnhancedResourceUsage> resource_usages;
+    luisa::span<const EnhancedResourceUsage> get_enhanced_resource_usages() const noexcept override {
         return resource_usages;
     }
 public:
@@ -312,20 +309,24 @@ public:
         }
         resource_usages.emplace_back(
             ipt,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+            D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
         resource_usages.emplace_back(
             opt,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+            D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
         resource_usages.emplace_back(
             w,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+            D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
         if (dmlGraph->temporaryBuffer.valid()) {
             resource_usages.emplace_back(
                 Argument::Buffer{
                     .handle = dmlGraph->temporaryBuffer.handle,
                     .offset = 0,
                     .size = dmlGraph->temporaryBuffer.total_size_bytes},
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+                D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
         }
         if (dmlGraph->persistentBuffer.valid()) {
             resource_usages.emplace_back(
@@ -333,7 +334,8 @@ public:
                     .handle = dmlGraph->persistentBuffer.handle,
                     .offset = 0,
                     .size = dmlGraph->persistentBuffer.total_size_bytes},
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+                D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
         }
     }
     [[nodiscard]] StreamTag stream_tag() const noexcept override {

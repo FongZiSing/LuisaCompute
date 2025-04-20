@@ -209,6 +209,8 @@ private:
     vstd::ArenaHashMap<ArenaRef, uint64_t, NoRangeHandle *> _no_range_resmap;
     vstd::ArenaHashMap<ArenaRef, uint64_t, BindlessHandle *> _bindless_map;
     vstd::ArenaHashMap<ArenaRef, uint64_t> _write_res_map;
+    const uint32_t max_allowed_dispatch_size = 65535ull * 32ull;
+    vstd::vector<uint64> _max_dispatch_blocks;
     int64_t _bindless_max_layer = -1;
     int64_t _max_mesh_level = -1;
     int64_t _max_accel_read_level = -1;
@@ -638,6 +640,19 @@ private:
             }
         };
         command->traverse_arguments(f);
+        auto max_disp_size_vec = command->max_dispatch_size();
+        auto max_disp_size = std::max<size_t>(max_disp_size_vec.x, std::max(max_disp_size_vec.y, max_disp_size_vec.z));
+        if (_dispatch_layer >= _max_dispatch_blocks.size()) {
+            _max_dispatch_blocks.resize(_dispatch_layer + 1);
+        }
+        while (_max_dispatch_blocks[_dispatch_layer] > 0 && _max_dispatch_blocks[_dispatch_layer] + max_disp_size > max_allowed_dispatch_size) {
+            _dispatch_layer++;
+            if (_dispatch_layer == _max_dispatch_blocks.size()) {
+                _max_dispatch_blocks.emplace_back(0);
+                break;
+            }
+        }
+        _max_dispatch_blocks[_dispatch_layer] += max_disp_size;
 
         for (auto &&i : _dispatch_read_handle) {
             set_read_layer(i.second, i.first, _dispatch_layer);
@@ -768,6 +783,7 @@ public:
         _max_mesh_level = -1;
         _cmd_lists.clear();
         _arena.clear();
+        _max_dispatch_blocks.clear();
         re_construct_map(_res_map);
         re_construct_map(_no_range_resmap);
         re_construct_map(_bindless_map);
@@ -796,6 +812,29 @@ public:
     // Shader : function, read/write multi resources
     void visit(const ShaderDispatchCommand *command) noexcept override {
         visit<true>(command, command, command->handle(), [&] {
+            uint64_t max_disp_size = 0;
+            if (command->is_multiple_dispatch()) {
+                for (auto &&i : command->dispatch_sizes()) {
+                    max_disp_size = std::max(i.x, std::max(i.y, i.z));
+                }
+            } else if (!command->is_indirect()) {
+                auto i = command->dispatch_size();
+                max_disp_size = std::max(i.x, std::max(i.y, i.z));
+            } else {
+                auto i = command->indirect_dispatch().max_dispatch_size;
+                max_disp_size = i;
+            }
+            if (_dispatch_layer >= _max_dispatch_blocks.size()) {
+                _max_dispatch_blocks.resize(_dispatch_layer + 1);
+            }
+            while (_max_dispatch_blocks[_dispatch_layer] + max_disp_size > max_allowed_dispatch_size) {
+                _dispatch_layer++;
+                if (_dispatch_layer == _max_dispatch_blocks.size()) {
+                    _max_dispatch_blocks.emplace_back(0);
+                    break;
+                }
+            }
+            _max_dispatch_blocks[_dispatch_layer] += max_disp_size;
             if (command->is_indirect()) {
                 auto &&t = command->indirect_dispatch();
                 add_dispatch_handle(

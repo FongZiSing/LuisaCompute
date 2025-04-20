@@ -110,14 +110,17 @@ uint64_t CallExpr::_compute_hash() const noexcept {
         }
     } else if (_op == CallOp::EXTERNAL) {
         hash = hash_value(external()->hash(), hash);
+    } else {
+        hash = hash_value(_curve_basis_set.hash(), hash);
     }
     return hash;
 }
 
-CallExpr::CallExpr(const Type *type, CallOp builtin, CallExpr::ArgumentList args) noexcept
+CallExpr::CallExpr(const Type *type, CallOp builtin, CallExpr::ArgumentList args, CurveBasisSet curve_basis_set) noexcept
     : Expression{Tag::CALL, type},
       _arguments{std::move(args)},
-      _op{builtin} { _mark(); }
+      _op{builtin},
+      _curve_basis_set{curve_basis_set} { _mark(); }
 
 CallExpr::CallExpr(const Type *type, Function callable, CallExpr::ArgumentList args) noexcept
     : Expression{Tag::CALL, type},

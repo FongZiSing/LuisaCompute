@@ -55,11 +55,6 @@ on_load(function(target)
             inherit = false
         })
     end
-    if get_config("vk_backend") or get_config("dx_backend") then
-        target:add("deps", "lc-hlsl-builtin", {
-            inherit = false
-        })
-    end
     if get_config("cpu_backend") then
         target:add("deps", "lc-backend-cpu", {
             inherit = false

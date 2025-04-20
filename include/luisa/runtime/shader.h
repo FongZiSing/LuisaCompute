@@ -273,6 +273,12 @@ public:
         _check_is_valid();
         return _uniform_size;
     }
+    ShaderCreationInfo release() noexcept {
+        return ShaderCreationInfo{
+            Resource::release(),
+            _block_size
+        };
+    }
 };
 template<size_t dimension, concepts::non_cvref... Args>
 class Shader final : public ShaderBase {
@@ -311,6 +317,7 @@ private:
                      ShaderDispatchCmdEncoder::compute_uniform_size(detail::shader_argument_types<Args...>())} {}
 
 public:
+    using ShaderBase::release;
     Shader() noexcept = default;
     ~Shader() noexcept = default;
     Shader(Shader &&) noexcept = default;

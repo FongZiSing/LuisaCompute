@@ -12,7 +12,7 @@ uint64 ManagedCollector::Allocate() noexcept {
     }
     auto lastSize = handles.size();
     auto lastEleSize = lastSize / objPerEle;
-    handles.push_back_uninitialized(objPerEle);
+    luisa::enlarge_by(handles, objPerEle);
     memset(handles.data() + lastSize, -1, sizeof(decltype(handles)::value_type) * objPerEle);
     return lastEleSize;
 }

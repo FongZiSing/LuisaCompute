@@ -265,8 +265,8 @@ checksum = "a26ae43d7bcc3b814de94796a5e736d4029efb0ee900c12e2d54c993ad1a1e07"
 
 [[package]]
 name = "embree_sys"
-version = "0.1.11"
-source = "git+https://github.com/shiinamiyuki/embree-sys#6a0a591d8ee60a55203cbd1c8da4b9b3c9758e67"
+version = "0.1.12"
+source = "git+https://github.com/shiinamiyuki/embree-sys#a087e23e3da118a0e6e14adb2644bdfdcd1ef0f0"
 dependencies = [
  "bindgen",
  "cmake",

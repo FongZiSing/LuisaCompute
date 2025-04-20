@@ -239,6 +239,12 @@ using ArrayHalf4 = ArrayVar<half4, N>;
 
 namespace detail {
 
+template<typename>
+struct is_var_impl : std::false_type {};
+
+template<typename T>
+struct is_var_impl<Var<T>> : std::true_type {};
+
 // Now Var<ulong> is defined and we can use it here.
 template<typename T>
 Var<ulong> RefEnableGetAddress<T>::address() const noexcept {
@@ -248,6 +254,12 @@ Var<ulong> RefEnableGetAddress<T>::address() const noexcept {
 }
 
 }// namespace detail
+
+template<typename T>
+struct is_var : detail::is_var_impl<std::remove_cvref_t<T>> {};
+
+template<typename T>
+inline constexpr bool is_var_v = is_var<T>::value;
 
 namespace dsl_literals {
 

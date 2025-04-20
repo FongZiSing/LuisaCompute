@@ -236,7 +236,7 @@ public:
     JSON(const char *s) noexcept : JSON{make_string(String{s})} {}
     JSON(Object o) noexcept : JSON{make_object(std::move(o))} {}
     JSON(Array a) noexcept : JSON{make_array(std::move(a))} {}
-    JSON(luisa::span<const JSON> a) noexcept : JSON{make_array(Array{a.cbegin(), a.cend()})} {}
+    JSON(luisa::span<const JSON> a) noexcept : JSON{make_array(Array{a.begin(), a.end()})} {}
     JSON(double n) noexcept : JSON{make_number(n)} {}
     JSON(float n) noexcept : JSON{make_number(n)} {}
     JSON(half n) noexcept : JSON{make_number(n)} {}
@@ -287,7 +287,7 @@ public:
         return *this;
     }
     JSON &operator=(luisa::span<const JSON> a) noexcept {
-        _copy(make_array(Array{a.cbegin(), a.cend()}));
+        _copy(make_array(Array{a.begin(), a.end()}));
         return *this;
     }
     JSON &operator=(double n) noexcept {
@@ -400,7 +400,11 @@ public:
 public:
     [[nodiscard]] decltype(auto) operator[](luisa::string_view key) noexcept {
         if (is_null()) { *this = make_object(); }
+#ifdef LUISA_USE_SYSTEM_STL
+        return as_object()[luisa::string{key}];
+#else
         return as_object()[key];
+#endif
     }
     [[nodiscard]] decltype(auto) operator[](size_t index) noexcept {
         if (is_null()) { *this = make_array(); }
@@ -843,9 +847,13 @@ private:
             case Expression::Tag::TYPE_ID: _convert_type_id_expr(j, static_cast<const TypeIDExpr *>(expr)); break;
             case Expression::Tag::STRING_ID: _convert_string_id_expr(j, static_cast<const StringIDExpr *>(expr)); break;
             case Expression::Tag::CPUCUSTOM: _convert_cpu_custom_expr(j, static_cast<const CpuCustomOpExpr *>(expr)); break;
-            case Expression::Tag::GPUCUSTOM: LUISA_NOT_IMPLEMENTED();
+            case Expression::Tag::GPUCUSTOM: LUISA_NOT_IMPLEMENTED("GPU custom op is not supported yet."); break;
+            case Expression::Tag::FUNC_REF: _convert_func_ref_expr(j, static_cast<const FuncRefExpr *>(expr)); break;
         }
         return j;
+    }
+    void _convert_func_ref_expr(JSON &j, const FuncRefExpr *expr) noexcept {
+        j["func"] = _function_index(Function{expr->func()});
     }
     void _convert_unary_expr(JSON &j, const UnaryExpr *expr) noexcept {
         j["operand"] = _convert_expr(expr->operand());
@@ -940,6 +948,7 @@ private:
             case Statement::Tag::RAY_QUERY: _convert_ray_query_stmt(j, static_cast<const RayQueryStmt *>(stmt)); break;
             case Statement::Tag::AUTO_DIFF: _convert_autodiff_stmt(j, static_cast<const AutoDiffStmt *>(stmt)); break;
             case Statement::Tag::PRINT: _convert_print_stmt(j, static_cast<const PrintStmt *>(stmt)); break;
+            case Statement::Tag::DEBUG_BREAK: LUISA_NOT_IMPLEMENTED("Debug break statement is not supported.");
         }
         return j;
     }
@@ -951,7 +960,11 @@ private:
             JSON::Array a;
             a.reserve(stmt->statements().size());
             for (auto &&s : stmt->statements()) {
-                a.emplace_back(_convert_stmt(s));
+                if (s->tag() != Statement::Tag::DEBUG_BREAK) {
+                    a.emplace_back(_convert_stmt(s));
+                } else {
+                    LUISA_WARNING_WITH_LOCATION("Ignoring debug break statement.");
+                }
             }
             return a;
         }();

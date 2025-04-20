@@ -1,4 +1,3 @@
-#include <luisa/xir/metadata/comment.h>
 #include <luisa/core/logging.h>
 #include <luisa/core/stl/unordered_map.h>
 #include <luisa/ast/external_function.h>
@@ -6,6 +5,8 @@
 #include <luisa/ast/function.h>
 #include <luisa/xir/builder.h>
 #include <luisa/xir/special_register.h>
+#include <luisa/xir/metadata/comment.h>
+#include <luisa/xir/metadata/curve_basis.h>
 #include <luisa/xir/translators/ast2xir.h>
 
 namespace luisa::compute::xir {
@@ -24,6 +25,8 @@ public:
         BreakContinueTarget break_continue_target;
         luisa::unordered_map<Variable, Value *> variables;
         luisa::vector<const CommentStmt *> comments;
+        luisa::unordered_map<Variable, Value *> adjoint_variables;
+        luisa::unordered_set<Value *> initialized_adjoint_variables;
     };
 
     struct TypedLiteral {
@@ -72,7 +75,7 @@ private:
     Current _current;
 
 private:
-    [[nodiscard]] Value *_translate_unary_expr(Builder &b, const UnaryExpr *expr) noexcept {
+    [[nodiscard]] Value *_translate_unary_expr(XIRBuilder &b, const UnaryExpr *expr) noexcept {
         auto operand = _translate_expression(b, expr->operand(), true);
         // matrices need special handling
         if (operand->type()->is_matrix()) {
@@ -101,7 +104,7 @@ private:
         return b.call(expr->type(), op, {operand});
     }
 
-    [[nodiscard]] Value *_type_cast_if_necessary(Builder &b, const Type *type, Value *value) noexcept {
+    [[nodiscard]] Value *_type_cast_if_necessary(XIRBuilder &b, const Type *type, Value *value) noexcept {
         // no cast needed
         if (type == value->type()) { return value; }
         // scalar to scalar cast
@@ -130,7 +133,7 @@ private:
         LUISA_ERROR_WITH_LOCATION("Invalid cast operation.");
     }
 
-    [[nodiscard]] Value *_translate_binary_expr(Builder &b, const BinaryExpr *expr) noexcept {
+    [[nodiscard]] Value *_translate_binary_expr(XIRBuilder &b, const BinaryExpr *expr) noexcept {
         auto type_promotion = promote_types(expr->op(), expr->lhs()->type(), expr->rhs()->type());
         auto op = [binary_op = expr->op(), lhs = expr->lhs(), rhs = expr->rhs()] {
             auto has_matrix = lhs->type()->is_matrix() || rhs->type()->is_matrix();
@@ -183,7 +186,7 @@ private:
         return _translate_typed_literal(key);
     }
 
-    [[nodiscard]] Value *_collect_access_indices(Builder &b, const Expression *expr, luisa::fixed_vector<Value *, 16u> &rev_indices) noexcept {
+    [[nodiscard]] Value *_collect_access_indices(XIRBuilder &b, const Expression *expr, luisa::fixed_vector<Value *, 16u> &rev_indices) noexcept {
         switch (expr->tag()) {
             case Expression::Tag::MEMBER: {
                 auto member_expr = static_cast<const MemberExpr *>(expr);
@@ -202,7 +205,7 @@ private:
         return _translate_expression(b, expr, false);
     }
 
-    [[nodiscard]] Value *_translate_member_or_access_expr(Builder &b, const Expression *expr, bool load_lval) noexcept {
+    [[nodiscard]] Value *_translate_member_or_access_expr(XIRBuilder &b, const Expression *expr, bool load_lval) noexcept {
         luisa::fixed_vector<Value *, 16u> args;
         auto base = _collect_access_indices(b, expr, args);
         if (base->is_lvalue()) {
@@ -216,7 +219,7 @@ private:
         return b.call(expr->type(), ArithmeticOp::EXTRACT, args);
     }
 
-    [[nodiscard]] Value *_translate_member_expr(Builder &b, const MemberExpr *expr, bool load_lval) noexcept {
+    [[nodiscard]] Value *_translate_member_expr(XIRBuilder &b, const MemberExpr *expr, bool load_lval) noexcept {
         if (expr->is_swizzle()) {
             if (expr->swizzle_size() == 1u) {
                 auto v = _translate_expression(b, expr->self(), load_lval);
@@ -279,7 +282,7 @@ private:
         return r;
     }
 
-    [[nodiscard]] Value *_translate_ref_expr(Builder &b, const RefExpr *expr, bool load_lval) noexcept {
+    [[nodiscard]] Value *_translate_ref_expr(XIRBuilder &b, const RefExpr *expr, bool load_lval) noexcept {
         auto ast_var = expr->variable();
         LUISA_ASSERT(ast_var.type() == expr->type(), "Variable type mismatch.");
         if (auto iter = _current.variables.find(ast_var); iter != _current.variables.end()) {
@@ -298,79 +301,63 @@ private:
         return iter->second;
     }
 
-    [[nodiscard]] Value *_translate_zero_or_one(const Type *type, int value) noexcept {
-
-        // zero or one scalar
-#define LUISA_AST2XIR_ZERO_ONE_SCALAR(T)    \
-    if (type == Type::of<T>()) {            \
-        return _translate_typed_literal(    \
-            {type, static_cast<T>(value)}); \
+    void _reset_adjoint_variable(XIRBuilder &b, Value *adjoint) noexcept {
+        auto zero = _module->create_constant_zero(adjoint->type());
+        auto store = b.store(adjoint, zero);
+        store->add_comment("reset adjoint variable");
     }
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(bool)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(byte)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(ubyte)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(short)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(ushort)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(int)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(uint)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(slong)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(ulong)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(half)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(float)
-        LUISA_AST2XIR_ZERO_ONE_SCALAR(double)
-#undef LUISA_AST2XIR_ZERO_ONE_SCALAR
 
-        // zero or one vector
-#define LUISA_AST2XIR_ZERO_ONE_VECTOR_N(T, N)                   \
-    if (type == Type::of<T##N>()) {                             \
-        return _translate_typed_literal(                        \
-            {type, luisa::make_##T##N(static_cast<T>(value))}); \
-    }
-#define LUISA_AST2XIR_ZERO_ONE_VECTOR(T)  \
-    LUISA_AST2XIR_ZERO_ONE_VECTOR_N(T, 2) \
-    LUISA_AST2XIR_ZERO_ONE_VECTOR_N(T, 3) \
-    LUISA_AST2XIR_ZERO_ONE_VECTOR_N(T, 4)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(bool)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(byte)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(ubyte)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(short)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(ushort)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(int)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(uint)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(slong)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(ulong)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(half)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(float)
-        LUISA_AST2XIR_ZERO_ONE_VECTOR(double)
-#undef LUISA_AST2XIR_ZERO_ONE_VECTOR
-#undef LUISA_AST2XIR_ZERO_ONE_VECTOR_N
-
-        // zero or one matrix
-#define LUISA_AST2XIR_ZERO_ONE_MATRIX(N)                                    \
-    if (type == Type::of<luisa::float##N##x##N>()) {                        \
-        return _translate_typed_literal(                                    \
-            {type, luisa::make_float##N##x##N(static_cast<float>(value))}); \
-    }
-        LUISA_AST2XIR_ZERO_ONE_MATRIX(2)
-        LUISA_AST2XIR_ZERO_ONE_MATRIX(3)
-        LUISA_AST2XIR_ZERO_ONE_MATRIX(4)
-#undef LUISA_AST2XIR_ZERO_ONE_MATRIX
-
-        // fall back to generic zero constant
-        if (value == 0) {
-            auto iter = _generated_zero_constants.try_emplace(type, nullptr).first;
-            if (iter->second == nullptr) { iter->second = _module->create_constant_zero(type); }
-            return iter->second;
+    [[nodiscard]] Value *_get_or_create_adjoint_variable(XIRBuilder &b, const Expression *expr) noexcept {
+        LUISA_ASSERT(expr->tag() == Expression::Tag::REF, "Unexpected expression tag.");
+        auto ast_var = static_cast<const RefExpr *>(expr)->variable();
+        auto [iter, just_inserted] = _current.adjoint_variables.try_emplace(ast_var, nullptr);
+        if (just_inserted) {
+            XIRBuilder bb;
+            bb.set_insertion_point(_current.f->body_block()->instructions().head_sentinel());
+            iter->second = bb.alloca_local(ast_var.type());
+            iter->second->add_comment("adjoint variable for autodiff");
+            _reset_adjoint_variable(bb, iter->second);
         }
-        if (value == 1) {
-            auto iter = _generated_one_constants.try_emplace(type, nullptr).first;
-            if (iter->second == nullptr) { iter->second = _module->create_constant_one(type); }
-            return iter->second;
-        }
-        LUISA_ERROR_WITH_LOCATION("Unexpected zero or one constant.");
+        return iter->second;
     }
 
-    [[nodiscard]] Value *_translate_call_expr(Builder &b, const CallExpr *expr) noexcept {
+    void _accumulate_grad(XIRBuilder &b, Value *adjoint, Value *grad) noexcept {
+        LUISA_ASSERT(adjoint->type() == grad->type(), "Adjoint and gradient type mismatch.");
+        switch (auto type = adjoint->type(); type->tag()) {
+            case Type::Tag::FLOAT16: [[fallthrough]];
+            case Type::Tag::FLOAT32: [[fallthrough]];
+            case Type::Tag::FLOAT64: [[fallthrough]];
+            case Type::Tag::VECTOR: [[fallthrough]];
+            case Type::Tag::MATRIX: {
+                auto old_grad = b.load(type, adjoint);
+                auto new_grad = b.call(type, ArithmeticOp::BINARY_ADD, {old_grad, grad});
+                b.store(adjoint, new_grad);
+                break;
+            }
+            case Type::Tag::ARRAY: {
+                auto elem_type = type->element();
+                auto dim = type->dimension();
+                for (auto i = 0u; i < dim; i++) {
+                    auto adjoint_elem = b.gep(elem_type, adjoint, {_translate_constant_access_index(i)});
+                    auto grad_elem = b.call(elem_type, ArithmeticOp::EXTRACT, {grad, _translate_constant_access_index(i)});
+                    _accumulate_grad(b, adjoint_elem, grad_elem);
+                }
+                break;
+            }
+            case Type::Tag::STRUCTURE: {
+                auto member_types = type->members();
+                for (auto i = 0u; i < member_types.size(); i++) {
+                    auto adjoint_elem = b.gep(member_types[i], adjoint, {_translate_constant_access_index(i)});
+                    auto grad_elem = b.call(member_types[i], ArithmeticOp::EXTRACT, {grad, _translate_constant_access_index(i)});
+                    _accumulate_grad(b, adjoint_elem, grad_elem);
+                }
+                break;
+            }
+            default: break;
+        }
+    }
+
+    [[nodiscard]] Value *_translate_call_expr(XIRBuilder &b, const CallExpr *expr) noexcept {
         if (expr->is_external()) {
             auto ast = expr->external();
             auto f = add_external_function(*ast);
@@ -511,6 +498,12 @@ private:
                 args.emplace_back(arg);
             }
             return b.call(expr->type(), ArithmeticOp::AGGREGATE, args);
+        };
+        auto curve_bases_marked = [&](xir::Instruction *inst) noexcept {
+            auto pool = inst->pool();
+            auto md = pool->create<CurveBasisMD>(pool, expr->curve_basis_set());
+            md->add_to_list(inst->metadata_list());
+            return inst;
         };
         // builtin function
         switch (expr->op()) {
@@ -702,14 +695,31 @@ private:
                 return b.unreachable_(message);
             }
             case CallOp::RASTER_DISCARD: return b.raster_discard();
-            case CallOp::ZERO: return _translate_zero_or_one(expr->type(), 0);
-            case CallOp::ONE: return _translate_zero_or_one(expr->type(), 1);
+            case CallOp::ZERO: return _module->create_constant_zero(expr->type());
+            case CallOp::ONE: return _module->create_constant_one(expr->type());
             case CallOp::PACK: LUISA_NOT_IMPLEMENTED();
             case CallOp::UNPACK: LUISA_NOT_IMPLEMENTED();
-            case CallOp::REQUIRES_GRADIENT: LUISA_NOT_IMPLEMENTED();
+            case CallOp::REQUIRES_GRADIENT: {
+                LUISA_ASSERT(expr->arguments().size() == 1u, "Requires gradient call requires exactly one argument.");
+                auto adjoint = _get_or_create_adjoint_variable(b, expr->arguments()[0]);
+                _reset_adjoint_variable(b, adjoint);
+                return nullptr;
+            }
             case CallOp::GRADIENT: LUISA_NOT_IMPLEMENTED();
             case CallOp::GRADIENT_MARKER: LUISA_NOT_IMPLEMENTED();
-            case CallOp::ACCUMULATE_GRADIENT: LUISA_NOT_IMPLEMENTED();
+            case CallOp::ACCUMULATE_GRADIENT: {
+                LUISA_ASSERT(expr->arguments().size() == 2u, "Accumulate gradient call requires exactly two arguments.");
+                auto adjoint = _translate_expression(b, expr->arguments()[0], false);// WHY???
+                if (_current.initialized_adjoint_variables.emplace(adjoint).second) {
+                    LUISA_ASSERT(adjoint->isa<AllocaInst>());
+                    XIRBuilder init_builder;
+                    init_builder.set_insertion_point(static_cast<AllocaInst *>(adjoint));
+                    _reset_adjoint_variable(init_builder, adjoint);
+                }
+                auto grad = _translate_expression(b, expr->arguments()[1], true);
+                _accumulate_grad(b, adjoint, grad);
+                return nullptr;
+            }
             case CallOp::BACKWARD: LUISA_NOT_IMPLEMENTED();
             case CallOp::DETACH: LUISA_NOT_IMPLEMENTED();
             case CallOp::RAY_TRACING_INSTANCE_TRANSFORM: return resource_call(ResourceQueryOp::RAY_TRACING_INSTANCE_TRANSFORM);
@@ -719,18 +729,18 @@ private:
             case CallOp::RAY_TRACING_SET_INSTANCE_VISIBILITY: return resource_call(ResourceWriteOp::RAY_TRACING_SET_INSTANCE_VISIBILITY_MASK);
             case CallOp::RAY_TRACING_SET_INSTANCE_OPACITY: return resource_call(ResourceWriteOp::RAY_TRACING_SET_INSTANCE_OPACITY);
             case CallOp::RAY_TRACING_SET_INSTANCE_USER_ID: return resource_call(ResourceWriteOp::RAY_TRACING_SET_INSTANCE_USER_ID);
-            case CallOp::RAY_TRACING_TRACE_CLOSEST: return resource_call(ResourceQueryOp::RAY_TRACING_TRACE_CLOSEST);
-            case CallOp::RAY_TRACING_TRACE_ANY: return resource_call(ResourceQueryOp::RAY_TRACING_TRACE_ANY);
-            case CallOp::RAY_TRACING_QUERY_ALL: return resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ALL);
-            case CallOp::RAY_TRACING_QUERY_ANY: return resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ANY);
+            case CallOp::RAY_TRACING_TRACE_CLOSEST: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_TRACE_CLOSEST));
+            case CallOp::RAY_TRACING_TRACE_ANY: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_TRACE_ANY));
+            case CallOp::RAY_TRACING_QUERY_ALL: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ALL));
+            case CallOp::RAY_TRACING_QUERY_ANY: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ANY));
             case CallOp::RAY_TRACING_INSTANCE_MOTION_MATRIX: return resource_call(ResourceQueryOp::RAY_TRACING_INSTANCE_MOTION_MATRIX);
             case CallOp::RAY_TRACING_INSTANCE_MOTION_SRT: return resource_call(ResourceQueryOp::RAY_TRACING_INSTANCE_MOTION_SRT);
             case CallOp::RAY_TRACING_SET_INSTANCE_MOTION_MATRIX: return resource_call(ResourceWriteOp::RAY_TRACING_SET_INSTANCE_MOTION_MATRIX);
             case CallOp::RAY_TRACING_SET_INSTANCE_MOTION_SRT: return resource_call(ResourceWriteOp::RAY_TRACING_SET_INSTANCE_MOTION_SRT);
-            case CallOp::RAY_TRACING_TRACE_CLOSEST_MOTION_BLUR: return resource_call(ResourceQueryOp::RAY_TRACING_TRACE_CLOSEST_MOTION_BLUR);
-            case CallOp::RAY_TRACING_TRACE_ANY_MOTION_BLUR: return resource_call(ResourceQueryOp::RAY_TRACING_TRACE_ANY_MOTION_BLUR);
-            case CallOp::RAY_TRACING_QUERY_ALL_MOTION_BLUR: return resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ALL_MOTION_BLUR);
-            case CallOp::RAY_TRACING_QUERY_ANY_MOTION_BLUR: return resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ANY_MOTION_BLUR);
+            case CallOp::RAY_TRACING_TRACE_CLOSEST_MOTION_BLUR: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_TRACE_CLOSEST_MOTION_BLUR));
+            case CallOp::RAY_TRACING_TRACE_ANY_MOTION_BLUR: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_TRACE_ANY_MOTION_BLUR));
+            case CallOp::RAY_TRACING_QUERY_ALL_MOTION_BLUR: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ALL_MOTION_BLUR));
+            case CallOp::RAY_TRACING_QUERY_ANY_MOTION_BLUR: return curve_bases_marked(resource_call(ResourceQueryOp::RAY_TRACING_QUERY_ANY_MOTION_BLUR));
             case CallOp::RAY_QUERY_WORLD_SPACE_RAY: return rq_call(RayQueryObjectReadOp::RAY_QUERY_OBJECT_WORLD_SPACE_RAY);
             case CallOp::RAY_QUERY_PROCEDURAL_CANDIDATE_HIT: return rq_call(RayQueryObjectReadOp::RAY_QUERY_OBJECT_PROCEDURAL_CANDIDATE_HIT);
             case CallOp::RAY_QUERY_TRIANGLE_CANDIDATE_HIT: return rq_call(RayQueryObjectReadOp::RAY_QUERY_OBJECT_TRIANGLE_CANDIDATE_HIT);
@@ -782,7 +792,7 @@ private:
         LUISA_NOT_IMPLEMENTED();
     }
 
-    [[nodiscard]] Value *_translate_cast_expr(Builder &b, const CastExpr *expr) noexcept {
+    [[nodiscard]] Value *_translate_cast_expr(XIRBuilder &b, const CastExpr *expr) noexcept {
         auto value = _translate_expression(b, expr->expression(), true);
         switch (expr->op()) {
             case compute::CastOp::STATIC: return _type_cast_if_necessary(b, expr->type(), value);
@@ -791,7 +801,7 @@ private:
         LUISA_ERROR_WITH_LOCATION("Unexpected cast operation.");
     }
 
-    [[nodiscard]] Value *_translate_expression(Builder &b, const Expression *expr, bool load_lval) noexcept {
+    [[nodiscard]] Value *_translate_expression(XIRBuilder &b, const Expression *expr, bool load_lval) noexcept {
         LUISA_ASSERT(expr != nullptr, "Expression must not be null.");
         switch (expr->tag()) {
             case Expression::Tag::UNARY: return _translate_unary_expr(b, static_cast<const UnaryExpr *>(expr));
@@ -826,7 +836,7 @@ private:
         _current.comments.emplace_back(static_cast<const CommentStmt *>(stmt));
     }
 
-    void _translate_switch_stmt(Builder &b, const SwitchStmt *ast_switch, luisa::span<const Statement *const> cdr) noexcept {
+    void _translate_switch_stmt(XIRBuilder &b, const SwitchStmt *ast_switch, luisa::span<const Statement *const> cdr) noexcept {
         // we do not support break/continue in switch statement
         auto old_break_continue_target = std::exchange(_current.break_continue_target, {});
         auto value = _translate_expression(b, ast_switch->expression(), true);
@@ -890,7 +900,7 @@ private:
         _translate_statements(b, cdr);
     }
 
-    void _translate_if_stmt(Builder &b, const IfStmt *ast_if, luisa::span<const Statement *const> cdr) noexcept {
+    void _translate_if_stmt(XIRBuilder &b, const IfStmt *ast_if, luisa::span<const Statement *const> cdr) noexcept {
         auto cond = _translate_expression(b, ast_if->condition(), true);
         cond = b.static_cast_if_necessary(Type::of<bool>(), cond);
         auto inst = _commented(b.if_(cond));
@@ -912,7 +922,7 @@ private:
         _translate_statements(b, cdr);
     }
 
-    void _translate_loop_stmt(Builder &b, const LoopStmt *ast_loop, luisa::span<const Statement *const> cdr) noexcept {
+    void _translate_loop_stmt(XIRBuilder &b, const LoopStmt *ast_loop, luisa::span<const Statement *const> cdr) noexcept {
         auto inst = _commented(b.simple_loop());
         auto merge_block = inst->create_merge_block();
         auto body_block = inst->create_body_block();
@@ -932,7 +942,24 @@ private:
         _translate_statements(b, cdr);
     }
 
-    void _translate_for_stmt(Builder &b, const ForStmt *ast_for, luisa::span<const Statement *const> cdr) noexcept {
+    void _translate_autodiff_stmt(XIRBuilder &b, const AutoDiffStmt *ast_autodiff, luisa::span<const Statement *const> cdr) noexcept {
+        // we do not support break/continue in autodiff statement
+        auto old_break_continue_target = std::exchange(_current.break_continue_target, {});
+        auto inst = _commented(b.autodiff_scope());
+        auto merge_block = inst->create_merge_block();
+        // entry block
+        {
+            b.set_insertion_point(inst->create_entry_block());
+            _translate_statements(b, ast_autodiff->body()->statements());
+            if (!b.is_insertion_point_terminator()) { b.br(merge_block); }
+        }
+        // merge block
+        _current.break_continue_target = old_break_continue_target;
+        b.set_insertion_point(merge_block);
+        _translate_statements(b, cdr);
+    }
+
+    void _translate_for_stmt(XIRBuilder &b, const ForStmt *ast_for, luisa::span<const Statement *const> cdr) noexcept {
         auto var = _translate_expression(b, ast_for->variable(), false);
         auto inst = _commented(b.loop());
         auto merge_block = inst->create_merge_block();
@@ -975,7 +1002,7 @@ private:
         _translate_statements(b, cdr);
     }
 
-    void _translate_ray_query_stmt(Builder &b, const RayQueryStmt *ast_ray_query, luisa::span<const Statement *const> cdr) noexcept {
+    void _translate_ray_query_stmt(XIRBuilder &b, const RayQueryStmt *ast_ray_query, luisa::span<const Statement *const> cdr) noexcept {
         // we do not support break/continue in ray query statement
         auto old_break_continue_target = std::exchange(_current.break_continue_target, {});
         // create the ray query loop
@@ -1005,7 +1032,7 @@ private:
         _translate_statements(b, cdr);
     }
 
-    void _translate_statements(Builder &b, luisa::span<const Statement *const> stmts) noexcept {
+    void _translate_statements(XIRBuilder &b, luisa::span<const Statement *const> stmts) noexcept {
         while (!stmts.empty()) {
             auto car = stmts.front();
             auto cdr = stmts.subspan(1);
@@ -1072,7 +1099,10 @@ private:
                     auto ast_ray_query = static_cast<const RayQueryStmt *>(car);
                     return _translate_ray_query_stmt(b, ast_ray_query, cdr);
                 }
-                case Statement::Tag::AUTO_DIFF: LUISA_NOT_IMPLEMENTED();
+                case Statement::Tag::AUTO_DIFF: {
+                    auto ast_auto_diff = static_cast<const AutoDiffStmt *>(car);
+                    return _translate_autodiff_stmt(b, ast_auto_diff, cdr);
+                }
                 case Statement::Tag::PRINT: {
                     auto ast_print = static_cast<const PrintStmt *>(car);
                     luisa::fixed_vector<Value *, 16u> args;
@@ -1080,6 +1110,17 @@ private:
                         args.emplace_back(_translate_expression(b, ast_arg, true));
                     }
                     _commented(b.print(luisa::string{ast_print->format()}, args));
+                    break;
+                }
+                case Statement::Tag::DEBUG_BREAK: {
+                    auto ast_debug_break = static_cast<const DebugBreakStmt *>(car);
+                    luisa::fixed_vector<Value *, 16u> watches;
+                    for (auto ast_watch : ast_debug_break->watches()) {
+                        auto watch = _translate_expression(b, ast_watch, true);
+                        watches.emplace_back(watch);
+                    }
+                    auto debug_break = _commented(b.debug_break(ast_debug_break->wrapper()));
+                    debug_break->set_operands(watches);
                     break;
                 }
             }
@@ -1090,7 +1131,7 @@ private:
 
     void _translate_current_function() noexcept {
         // create the body block
-        Builder b;
+        XIRBuilder b;
         b.set_insertion_point(_current.f->create_body_block());
         // convert the arguments
         for (auto ast_arg : _current.ast->arguments()) {

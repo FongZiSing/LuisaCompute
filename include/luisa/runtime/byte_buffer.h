@@ -33,7 +33,12 @@ public:
     }
     ByteBuffer &operator=(ByteBuffer const &) noexcept = delete;
     using Resource::operator bool;
-
+    BufferCreationInfo release() noexcept {
+        return BufferCreationInfo{
+            Resource::release(),
+            1,
+            _size_bytes};
+    }
     [[nodiscard]] ByteBufferView view() const noexcept;
     [[nodiscard]] ByteBufferView view(size_t offset_bytes, size_t size_bytes) const noexcept;
 

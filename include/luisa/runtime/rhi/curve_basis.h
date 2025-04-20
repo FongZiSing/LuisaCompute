@@ -20,7 +20,7 @@ enum class CurveBasis : uint32_t {
     CATMULL_ROM,
     /// Cubic Bézier curve cone with open ends (i.e., no end caps).
     /// Each curve segment needs to have four control points.
-    BEZIER
+    BEZIER,
 };
 
 static constexpr auto curve_basis_count =

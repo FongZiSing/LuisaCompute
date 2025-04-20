@@ -41,6 +41,7 @@ private:
 public:
     SparseImage() noexcept = default;
     using Resource::operator bool;
+    using Resource::release;
     SparseImage(SparseImage &&) noexcept = default;
     SparseImage(const SparseImage &) noexcept = delete;
     SparseImage &operator=(SparseImage &&rhs) noexcept {

@@ -47,8 +47,14 @@ private:
 
     struct CurrentFunction {
         llvm::Function *func = nullptr;
+        llvm::BasicBlock *exit_block = nullptr;
+        llvm::Value *coro_token = nullptr;
+        llvm::Value *coro_handle = nullptr;
+        llvm::BasicBlock *coro_suspend_block = nullptr;
+        llvm::BasicBlock *coro_cleanup_block = nullptr;
         luisa::unordered_map<const xir::Value *, llvm::Value *> value_map;
         luisa::unordered_set<const llvm::BasicBlock *> translated_basic_blocks;
+        luisa::unordered_map<llvm::BasicBlock *, llvm::BasicBlock *> phi_incoming_overrides;
         luisa::vector<const xir::PhiInst *> phi_nodes;
 
         // builtin variables
@@ -106,6 +112,19 @@ private:
         return usage;
     }
 
+    // check if the kernel requires block synchronization, which would require coroutine
+    [[nodiscard]] bool _analyze_requires_sync_block(const xir::KernelFunction *kernel) noexcept {
+        auto requires_sync_block = false;
+        kernel->traverse_instructions([&](const xir::Instruction *inst) noexcept {
+            if (inst->isa<xir::ThreadGroupInst>() &&
+                static_cast<const xir::ThreadGroupInst *>(inst)->op() ==
+                    xir::ThreadGroupOp::SYNCHRONIZE_BLOCK) {
+                requires_sync_block = true;// TODO: we should early break the traversal here
+            }
+        });
+        return requires_sync_block;
+    }
+
 private:
     llvm::LLVMContext &_llvm_context;
     llvm::Module *_llvm_module = nullptr;
@@ -113,6 +132,8 @@ private:
     luisa::unordered_map<const xir::Constant *, llvm::Constant *> _llvm_constants;
     luisa::unordered_map<const xir::Function *, llvm::Function *> _llvm_functions;
     FallbackCodeGenFeedback::PrintInstMap _print_inst_map;
+    FallbackCodeGenFeedback::DebugCallbackMap _debug_callback_map;
+    size_t _tls_offset = 0u;
 
 private:
     void _reset() noexcept {
@@ -120,6 +141,7 @@ private:
         _llvm_struct_types.clear();
         _llvm_constants.clear();
         _llvm_functions.clear();
+        _tls_offset = 0u;
     }
 
 private:
@@ -168,6 +190,10 @@ private:
             default: break;
         }
         LUISA_ERROR_WITH_LOCATION("Invalid type: {}.", t->description());
+    }
+
+    static void _move_llvm_inst_to_block_begin(llvm::Instruction *inst, llvm::BasicBlock *block) noexcept {
+        inst->moveBefore(*block, block->begin());
     }
 
     [[nodiscard]] LLVMStruct *_translate_struct_type(const Type *t) noexcept {
@@ -447,7 +473,7 @@ private:
             auto ptr_type = llvm::PointerType::get(_llvm_context, 0);
             return llvm::ConstantPointerNull::get(ptr_type);
         }
-        return b.CreateGlobalStringPtr(s);
+        return b.CreateGlobalString(s);
     }
 
     [[nodiscard]] llvm::Value *_translate_gep(CurrentFunction &current, IRBuilder &b,
@@ -1078,7 +1104,6 @@ private:
         if (auto decl = llvm::dyn_cast<llvm::Function>(f.getCallee())) {
             // mark that the function is pure: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
             decl->addFnAttr(llvm::Attribute::NoCallback);
-            decl->addFnAttr(llvm::Attribute::NoUnwind);
             decl->setMustProgress();
             decl->setDoesNotFreeMemory();
             decl->setNoSync();
@@ -1155,7 +1180,6 @@ private:
         if (auto decl = llvm::dyn_cast<llvm::Function>(f.getCallee())) {
             // mark that the function is pure: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
             decl->addFnAttr(llvm::Attribute::NoCallback);
-            decl->addFnAttr(llvm::Attribute::NoUnwind);
             decl->setMustProgress();
             decl->setDoesNotFreeMemory();
             decl->setNoSync();
@@ -1423,7 +1447,7 @@ private:
         auto llvm_src = _lookup_value(current, b, src);
 
         auto indices = inst->operand_uses().subspan(1);
-        auto statically_shuffled = std::all_of(indices.cbegin(), indices.cend(), [](const xir::Use *v) {
+        auto statically_shuffled = std::all_of(indices.begin(), indices.end(), [](const xir::Use *v) {
             LUISA_ASSERT(v->value() != nullptr, "shuffle index is null");
             return v->value()->derived_value_tag() == xir::DerivedValueTag::CONSTANT;
         });
@@ -2050,22 +2074,6 @@ private:
     [[nodiscard]] llvm::Value *_translate_atomic_op(CurrentFunction &current, IRBuilder &b,
                                                     const char *op_name, const xir::AtomicInst *inst,
                                                     bool byte_address = false) noexcept {
-        auto value_count = inst->value_count();
-        auto buffer = inst->base();
-        LUISA_ASSERT(buffer->type()->is_buffer(), "Invalid buffer type.");
-        auto buffer_elem_type = buffer->type()->element();
-        LUISA_ASSERT(buffer_elem_type != nullptr, "Invalid buffer element type.");
-        auto indices = inst->index_uses();
-        auto slot = indices.front()->value();
-        indices = indices.subspan(1);
-        auto llvm_elem_ptr = _get_buffer_element_ptr(current, b, buffer, slot, byte_address);
-        if (byte_address) {
-            LUISA_ASSERT(2 + value_count == inst->operand_count(), "Invalid atomic operation.");
-        }
-        if (!indices.empty()) {
-            llvm_elem_ptr = _translate_gep(current, b, inst->type(),
-                                           buffer_elem_type, llvm_elem_ptr, indices);
-        }
         auto llvm_func_name = [&] {
             switch (inst->type()->tag()) {
                 case Type::Tag::INT32: return luisa::format("luisa.atomic.{}.int", op_name);
@@ -2076,6 +2084,35 @@ private:
                 default: break;
             }
             LUISA_ERROR_WITH_LOCATION("Unsupported atomic operation value type: {}.", inst->type()->description());
+        }();
+        auto value_count = inst->value_count();
+        auto indices = inst->index_uses();
+        auto llvm_elem_ptr = [&] {
+            auto base = inst->base();
+            LUISA_ASSERT(base != nullptr && base->type() != nullptr, "Invalid atomic operation base.");
+            if (base->type()->is_buffer()) {
+                LUISA_ASSERT(base->type()->is_buffer(), "Invalid buffer type.");
+                auto buffer_elem_type = base->type()->element();
+                LUISA_ASSERT(buffer_elem_type != nullptr, "Invalid buffer element type.");
+                auto slot = indices.front()->value();
+                auto llvm_elem = _get_buffer_element_ptr(current, b, base, slot, byte_address);
+                indices = indices.subspan(1);
+                if (byte_address) {
+                    LUISA_ASSERT(2 + value_count == inst->operand_count(), "Invalid atomic operation.");
+                }
+                if (!indices.empty()) {
+                    llvm_elem = _translate_gep(current, b, inst->type(),
+                                               buffer_elem_type, llvm_elem, indices);
+                }
+                return llvm_elem;
+            }
+            // otherwise, it's a shared memory atomic operation
+            LUISA_ASSERT(base->isa<xir::AllocaInst>() && static_cast<const xir::AllocaInst *>(base)->is_shared(),
+                         "Invalid shared memory atomic operation base.");
+            llvm_func_name.append(".smem");
+            auto llvm_smem = _lookup_value(current, b, base);
+            return _translate_gep(current, b, inst->type(),
+                                  base->type(), llvm_smem, indices);
         }();
         auto llvm_func = _llvm_module->getFunction(llvm::StringRef{llvm_func_name});
         LUISA_ASSERT(llvm_func != nullptr && llvm_func->arg_size() == 1 + value_count, "Invalid atomic operation function.");
@@ -2234,10 +2271,11 @@ private:
             }
             case xir::ArithmeticOp::ABS: {
                 auto llvm_x = _lookup_value(current, b, inst->operand(0u));
-                auto llvm_intrinsic = llvm_x->getType()->isFPOrFPVectorTy() ?
-                                          llvm::Intrinsic::fabs :
-                                          llvm::Intrinsic::abs;
-                return b.CreateUnaryIntrinsic(llvm_intrinsic, llvm_x);
+                if (llvm_x->getType()->isIntOrIntVectorTy()) {
+                    auto llvm_false = llvm::ConstantInt::getFalse(_llvm_context);
+                    return b.CreateBinaryIntrinsic(llvm::Intrinsic::abs, llvm_x, llvm_false);
+                }
+                return b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, llvm_x);
             }
             case xir::ArithmeticOp::MIN: {
                 auto llvm_x = _lookup_value(current, b, inst->operand(0u));
@@ -2748,6 +2786,70 @@ private:
         LUISA_ERROR_WITH_LOCATION("Invalid cast operation.");
     }
 
+    [[nodiscard]] llvm::Value *_translate_debug_break_inst(CurrentFunction &current, IRBuilder &b,
+                                                           const xir::DebugBreakInst *inst) noexcept {
+        llvm::SmallVector<llvm::Value *, 8> llvm_args;
+        llvm::SmallVector<llvm::Type *, 8> llvm_arg_types;
+        llvm_args.reserve(inst->operand_count());
+        llvm_arg_types.reserve(inst->operand_count());
+        for (auto use : inst->operand_uses()) {
+            LUISA_ASSERT(use->value() != nullptr && use->value()->type() != nullptr,
+                         "Invalid operand for debug break.");
+            llvm_args.emplace_back(_lookup_value(current, b, use->value()));
+            llvm_arg_types.emplace_back(llvm_args.back()->getType());
+        }
+        auto llvm_ptr_type = llvm::PointerType::get(_llvm_context, 0);
+        auto llvm_i64_type = llvm::IntegerType::get(_llvm_context, 64);
+        auto llvm_struct_type = llvm::StructType::get(_llvm_context, llvm_arg_types);
+        // declare a callback function: (ptr struct, ptr eval_func) -> void
+        auto llvm_callback_type = llvm::FunctionType::get(
+            b.getVoidTy(), {llvm_ptr_type, llvm_ptr_type}, false);
+        auto llvm_callback = llvm::Function::Create(
+            llvm_callback_type, llvm::Function::ExternalLinkage, "luisa.debug.break.callback", _llvm_module);
+        {
+            llvm_callback->setDoesNotThrow();
+            llvm_callback->setDoesNotRecurse();
+            llvm_callback->setMustProgress();
+            llvm_callback->setWillReturn();
+            _debug_callback_map.emplace_back(inst->callback(), llvm_callback->getName().str());
+        }
+        // create a evaluation function: (ptr struct, i64 index) -> GEP(struct, index)
+        auto llvm_eval_func_type = llvm::FunctionType::get(
+            llvm_ptr_type, {llvm_ptr_type, llvm_i64_type}, false);
+        auto llvm_eval_func = llvm::Function::Create(
+            llvm_eval_func_type, llvm::Function::PrivateLinkage, "luisa.debug.break.eval", _llvm_module);
+        {
+            auto llvm_body = llvm::BasicBlock::Create(_llvm_context, "body", llvm_eval_func);
+            IRBuilder b{llvm_body};
+            auto llvm_struct_ptr = llvm_eval_func->getArg(0);
+            auto llvm_arg_index = llvm_eval_func->getArg(1);
+            auto llvm_unreachable_block = llvm::BasicBlock::Create(_llvm_context, "unreachable", llvm_eval_func);
+            auto llvm_switch = b.CreateSwitch(llvm_arg_index, llvm_unreachable_block, llvm_args.size());
+            for (auto i = 0u; i < llvm_args.size(); i++) {
+                auto llvm_case_value = b.getInt64(i);
+                auto llvm_case_block = llvm::BasicBlock::Create(_llvm_context, "", llvm_eval_func);
+                llvm_switch->addCase(llvm_case_value, llvm_case_block);
+                b.SetInsertPoint(llvm_case_block);
+                auto llvm_arg_ptr = b.CreateStructGEP(llvm_struct_type, llvm_struct_ptr, i);
+                b.CreateRet(llvm_arg_ptr);
+            }
+            b.SetInsertPoint(llvm_unreachable_block);
+            b.CreateUnreachable();
+        }
+
+        // store the arguments in a struct
+        auto llvm_struct_alloca = b.CreateAlloca(llvm_struct_type);
+        b.CreateLifetimeStart(llvm_struct_alloca);
+        for (auto i = 0u; i < llvm_args.size(); i++) {
+            auto llvm_arg_ptr = b.CreateStructGEP(llvm_struct_type, llvm_struct_alloca, i);
+            b.CreateStore(llvm_args[i], llvm_arg_ptr);
+        }
+        // invoke the callback
+        auto llvm_call = b.CreateCall(llvm_callback, {llvm_struct_alloca, llvm_eval_func});
+        b.CreateLifetimeEnd(llvm_struct_alloca);
+        return llvm_call;
+    }
+
     [[nodiscard]] llvm::Value *_translate_print_inst(CurrentFunction &current, IRBuilder &b,
                                                      const xir::PrintInst *inst) noexcept {
         // create argument struct
@@ -2797,13 +2899,13 @@ private:
         auto fmt_id = static_cast<uint64_t>(_print_inst_map.size());
         _print_inst_map.emplace_back(inst, llvm_print_func->getName());
         llvm_print_func->setCallingConv(llvm::CallingConv::C);
+        llvm_print_func->addFnAttr(llvm::Attribute::NoCallback);
         llvm_print_func->setNoSync();
         llvm_print_func->setMustProgress();
         llvm_print_func->setWillReturn();
         llvm_print_func->setDoesNotThrow();
         llvm_print_func->setOnlyAccessesInaccessibleMemOrArgMem();
         llvm_print_func->setDoesNotFreeMemory();
-        llvm_print_func->setUWTableKind(llvm::UWTableKind::None);
         for (auto &&llvm_print_arg : llvm_print_func->args()) {
             if (llvm_print_arg.getType()->isPointerTy()) {
                 llvm_print_arg.addAttr(llvm::Attribute::NoCapture);
@@ -2822,7 +2924,32 @@ private:
 
     [[nodiscard]] llvm::Value *_translate_thread_group_inst(CurrentFunction &current, IRBuilder &b,
                                                             const xir::ThreadGroupInst *inst) noexcept {
+        // SER translates to no-op
         if (inst->op() == xir::ThreadGroupOp::SHADER_EXECUTION_REORDER) {
+            return nullptr;
+        }
+        // sync block is only allowed in kernel
+        if (inst->op() == xir::ThreadGroupOp::SYNCHRONIZE_BLOCK) {
+            LUISA_ASSERT(inst->parent_function()->isa<xir::KernelFunction>(),
+                         "Synchronize block is only allowed in kernel.");
+            // %signal = call i8 @llvm.coro.suspend(token none, i1 false)
+            auto llvm_i8_type = b.getInt8Ty();
+            auto llvm_i8_one = b.getInt8(1);
+            auto llvm_i8_zero = b.getInt8(0);
+            auto llvm_i1_false = b.getInt1(false);
+            auto llvm_token_none = llvm::ConstantTokenNone::get(_llvm_context);
+            auto llvm_signal = b.CreateIntrinsic(llvm_i8_type, llvm::Intrinsic::coro_suspend, {llvm_token_none, llvm_i1_false});
+            // switch %signal, label %llvm_coro_suspend_block, [i8 0, label %llvm_coro_resume_block,
+            //                                                  i8 1, label %llvm_coro_cleanup_block]
+            auto llvm_coro_resume_block = llvm::BasicBlock::Create(_llvm_context, "coro.resume", current.func);
+            auto llvm_coro_switch = b.CreateSwitch(llvm_signal, current.coro_suspend_block, 2);
+            llvm_coro_switch->addCase(llvm_i8_zero, llvm_coro_resume_block);
+            llvm_coro_switch->addCase(llvm_i8_one, current.coro_cleanup_block);
+            // record the override to redirect phi_incoming
+            auto [_, success] = current.phi_incoming_overrides.emplace(b.GetInsertBlock(), llvm_coro_resume_block);
+            LUISA_ASSERT(success, "Failed to override phi incoming block which is already set.");
+            // llvm_coro_suspend_block:
+            b.SetInsertPoint(llvm_coro_resume_block);
             return nullptr;
         }
         LUISA_NOT_IMPLEMENTED();
@@ -2910,6 +3037,18 @@ private:
             }
             case xir::DerivedInstructionTag::RETURN: {
                 auto return_inst = static_cast<const xir::ReturnInst *>(inst);
+                // a kernel has a merged exit block for easier handling of block synchronization (simulated with coroutines)
+                if (return_inst->parent_function()->isa<xir::KernelFunction>()) {
+                    LUISA_DEBUG_ASSERT(return_inst->return_value() == nullptr,
+                                       "Kernel function should not have a return value.");
+                    if (current.exit_block == nullptr) {
+                        current.exit_block = llvm::BasicBlock::Create(_llvm_context, "exit", current.func);
+                        IRBuilder exit_builder{current.exit_block};
+                        exit_builder.CreateRetVoid();
+                    }
+                    return b.CreateBr(current.exit_block);
+                }
+                // other functions just return in place
                 if (auto ret_val = return_inst->return_value()) {
                     auto llvm_ret_val = _lookup_value(current, b, ret_val);
                     return b.CreateRet(llvm_ret_val);
@@ -2926,6 +3065,35 @@ private:
                 return b.CreatePHI(llvm_type, phi_inst->incoming_count());
             }
             case xir::DerivedInstructionTag::ALLOCA: {
+                // shared memory should be hoisted to global thread-local variables
+                if (auto a = static_cast<const xir::AllocaInst *>(inst); a->op() == xir::AllocaOp::SHARED) {
+                    // call luisa.shared.memory() to get the shared memory base address
+                    auto llvm_ptr_type = llvm::PointerType::get(_llvm_context, 0);
+                    auto llvm_func = _llvm_module->getOrInsertFunction(
+                        "luisa.shared.memory", llvm::FunctionType::get(llvm_ptr_type, {}, false));
+                    // mark that this function is pure and speculatable
+                    {
+                        auto llvm_func_signature = llvm::cast<llvm::Function>(llvm_func.getCallee());
+                        llvm_func_signature->setDoesNotAccessMemory();
+                        llvm_func_signature->setDoesNotThrow();
+                        llvm_func_signature->setDoesNotFreeMemory();
+                        llvm_func_signature->setWillReturn();
+                        llvm_func_signature->setSpeculatable();
+                        llvm_func_signature->setDoesNotRecurse();
+                        llvm_func_signature->setNoSync();
+                        llvm_func_signature->setMustProgress();
+                        llvm_func_signature->addFnAttr(llvm::Attribute::NoCallback);
+                    }
+                    auto llvm_shared_memory = b.CreateCall(llvm_func);
+                    // find offset into shared memory
+                    auto align = std::max<size_t>(_get_type_alignment(inst->type()), 16u);
+                    auto size = luisa::align(_get_type_size(inst->type()), align);
+                    auto offset = luisa::align(_tls_offset, align);
+                    _tls_offset += size;
+                    LUISA_ASSERT(_tls_offset <= max_shared_memory_size, "Shared memory size exceeds limit.");
+                    return b.CreateInBoundsPtrAdd(llvm_shared_memory, b.getInt64(offset));
+                }
+                // otherwise we may directly allocate the variable in the stack
                 auto llvm_type = _translate_type(inst->type(), false);
                 auto llvm_inst = b.CreateAlloca(llvm_type);
                 auto alignment = _get_type_alignment(inst->type());
@@ -2985,6 +3153,10 @@ private:
                 auto print_inst = static_cast<const xir::PrintInst *>(inst);
                 return _translate_print_inst(current, b, print_inst);
             }
+            case xir::DerivedInstructionTag::DEBUG_BREAK: {
+                auto debug_break_inst = static_cast<const xir::DebugBreakInst *>(inst);
+                return _translate_debug_break_inst(current, b, debug_break_inst);
+            }
             case xir::DerivedInstructionTag::ASSERT: {
                 auto assert_inst = static_cast<const xir::AssertInst *>(inst);
                 auto llvm_condition = _lookup_value(current, b, assert_inst->condition());
@@ -2993,8 +3165,7 @@ private:
                 auto assert_func_type = llvm::FunctionType::get(llvm_void_type, {llvm_condition->getType(), llvm_message->getType()}, false);
                 auto external_assert = _llvm_module->getOrInsertFunction("luisa.assert", assert_func_type);
                 auto external_assert_signature = llvm::cast<llvm::Function>(external_assert.getCallee());
-                external_assert_signature->addFnAttr(llvm::Attribute::NoCapture);
-                external_assert_signature->addFnAttr(llvm::Attribute::ReadOnly);
+                external_assert_signature->setOnlyReadsMemory();
                 return b.CreateCall(external_assert, {llvm_condition, llvm_message});
             }
             case xir::DerivedInstructionTag::ASSUME: {
@@ -3079,8 +3250,8 @@ private:
     void _translate_instructions_in_basic_block(CurrentFunction &current, llvm::BasicBlock *llvm_bb, const xir::BasicBlock *bb) noexcept {
         if (bb == nullptr) { return; }
         if (current.translated_basic_blocks.emplace(llvm_bb).second) {
+            IRBuilder b{llvm_bb};
             for (auto &inst : bb->instructions()) {
-                IRBuilder b{llvm_bb};
                 auto llvm_value = _translate_instruction(current, b, &inst);
                 auto [_, success] = current.value_map.emplace(&inst, llvm_value);
                 LUISA_ASSERT(success, "Instruction already translated.");
@@ -3094,7 +3265,19 @@ private:
         return llvm_bb;
     }
 
-    [[nodiscard]] llvm::Function *_translate_kernel_function(const xir::KernelFunction *f) noexcept {
+    struct KernelWrapper {
+        llvm::Function *func;
+        llvm::BasicBlock *entry_block;
+        llvm::Value *block_id;
+        llvm::Value *block_size;
+        llvm::Value *block_size_x;
+        llvm::Value *block_size_y;
+        llvm::Value *thread_count;
+        llvm::Value *dispatch_size;
+        llvm::SmallVector<llvm::Value *, 32u> args;
+    };
+
+    [[nodiscard]] KernelWrapper _create_kernel_wrapper(const xir::KernelFunction *f) noexcept {
         // create a wrapper function for the kernel with the following template:
         // struct Params { params... };
         // struct LaunchConfig {
@@ -3109,39 +3292,18 @@ private:
         //   /* assume(block_size == f.block_size) */
         //   dispatch_size = config->dispatch_size;
         //   thread_count = block_size.x * block_size.y * block_size.z;
-        //   pi = alloca i32;
-        //   store 0, pi;
-        //   br loop;
-        // loop:
-        //   i = load pi;
-        //   thread_id_x = i % block_size.x;
-        //   thread_id_y = (i / block_size.x) % block_size.y;
-        //   thread_id_z = i / (block_size.x * block_size.y);
-        //   thread_id = (thread_id_x, thread_id_y, thread_id_z);
-        //   dispatch_id = block_id * block_size + thread_id;
-        //   in_range = reduce_and(dispatch_id < dispatch_size);
-        //   br in_range, body, update;
-        // body:
-        //   call f(params, thread_id, block_id, dispatch_id, block_size, dispatch_size);
-        //   br update;
-        // update:
-        //   next_i = i + 1;
-        //   store next_i, pi;
-        //   br next_i < thread_count, loop, merge;
-        // merge:
-        //   ret;
+        //   ...
+        // }
 
-        // create the kernel function
-        auto llvm_kernel = _translate_function_definition(f, llvm::Function::PrivateLinkage, "kernel");
-
-        // create the wrapper function
         auto llvm_void_type = llvm::Type::getVoidTy(_llvm_context);
         auto llvm_ptr_type = llvm::PointerType::get(_llvm_context, 0);
-        auto function_name = luisa::format("kernel.main", luisa::string_view{llvm_kernel->getName()});
+        auto function_name = luisa::format("kernel.main");
         auto llvm_wrapper_type = llvm::FunctionType::get(llvm_void_type, {llvm_ptr_type, llvm_ptr_type}, false);
         auto llvm_wrapper_function = llvm::Function::Create(llvm_wrapper_type, llvm::Function::ExternalLinkage, llvm::Twine{function_name}, _llvm_module);
-        llvm_wrapper_function->getArg(0)->setName("launch.params");
-        llvm_wrapper_function->getArg(1)->setName("launch.config");
+        auto llvm_kernel_params = llvm_wrapper_function->getArg(0);
+        auto llvm_kernel_config = llvm_wrapper_function->getArg(1);
+        llvm_kernel_params->setName("launch.params");
+        llvm_kernel_config->setName("launch.config");
         _llvm_functions.emplace(f, llvm_wrapper_function);
 
         // create the entry block for the wrapper function
@@ -3234,75 +3396,285 @@ private:
         }
         auto llvm_thread_count = b.CreateNUWMul(llvm_block_size_x, llvm_block_size_y, "thread_count");
         llvm_thread_count = b.CreateNUWMul(llvm_thread_count, llvm_block_size_z);
-        // thread-in-block loop
-        auto llvm_ptr_i = b.CreateAlloca(llvm_i32_type, nullptr, "loop.i.ptr");
-        b.CreateStore(b.getInt32(0), llvm_ptr_i);
-        // loop head
-        auto llvm_loop_block = llvm::BasicBlock::Create(_llvm_context, "loop.head", llvm_wrapper_function);
-        b.CreateBr(llvm_loop_block);
-        b.SetInsertPoint(llvm_loop_block);
-        // compute thread id
-        auto llvm_i = b.CreateLoad(llvm_i32_type, llvm_ptr_i, "loop.i");
-        auto llvm_thread_id_x = b.CreateURem(llvm_i, llvm_block_size_x, "thread_id.x");
-        auto llvm_thread_id_yz = b.CreateUDiv(llvm_i, llvm_block_size_x);
-        auto llvm_thread_id_y = b.CreateURem(llvm_thread_id_yz, llvm_block_size_y, "thread_id.y");
-        auto llvm_thread_id_z = b.CreateUDiv(llvm_thread_id_yz, llvm_block_size_y, "thread_id.z");
+
+        return {
+            .func = llvm_wrapper_function,
+            .entry_block = llvm_entry_block,
+            .block_id = llvm_block_id,
+            .block_size = llvm_block_size,
+            .block_size_x = llvm_block_size_x,
+            .block_size_y = llvm_block_size_y,
+            .thread_count = llvm_thread_count,
+            .dispatch_size = llvm_dispatch_size,
+            .args = std::move(llvm_args),
+        };
+    }
+
+    struct KernelInvokeIndex {
+        llvm::Value *thread_id;
+        llvm::Value *dispatch_id;
+        llvm::Value *in_range;
+    };
+
+    [[nodiscard]] KernelInvokeIndex _compute_kernel_invoke_index(const KernelWrapper &llvm_wrapper, IRBuilder &b, llvm::Value *llvm_i) const noexcept {
+        auto llvm_i32_type = llvm::Type::getInt32Ty(_llvm_context);
+        auto llvm_builtin_type = llvm::VectorType::get(llvm_i32_type, 3, false);
+        auto llvm_thread_id_x = b.CreateURem(llvm_i, llvm_wrapper.block_size_x, "thread_id.x");
+        auto llvm_thread_id_yz = b.CreateUDiv(llvm_i, llvm_wrapper.block_size_x);
+        auto llvm_thread_id_y = b.CreateURem(llvm_thread_id_yz, llvm_wrapper.block_size_y, "thread_id.y");
+        auto llvm_thread_id_z = b.CreateUDiv(llvm_thread_id_yz, llvm_wrapper.block_size_y, "thread_id.z");
         auto llvm_thread_id = llvm::cast<llvm::Value>(llvm::PoisonValue::get(llvm_builtin_type));
         llvm_thread_id = b.CreateInsertElement(llvm_thread_id, llvm_thread_id_x, static_cast<uint64_t>(0));
         llvm_thread_id = b.CreateInsertElement(llvm_thread_id, llvm_thread_id_y, static_cast<uint64_t>(1));
         llvm_thread_id = b.CreateInsertElement(llvm_thread_id, llvm_thread_id_z, static_cast<uint64_t>(2));
         llvm_thread_id->setName("thread_id");
         // compute dispatch id
-        auto llvm_dispatch_id = b.CreateNUWMul(llvm_block_id, llvm_block_size);
+        auto llvm_dispatch_id = b.CreateNUWMul(llvm_wrapper.block_id, llvm_wrapper.block_size);
         llvm_dispatch_id = b.CreateNUWAdd(llvm_dispatch_id, llvm_thread_id, "dispatch_id");
-        // check if in range
-        auto llvm_in_range = b.CreateICmpULT(llvm_dispatch_id, llvm_dispatch_size);
+        auto llvm_in_range = b.CreateICmpULT(llvm_dispatch_id, llvm_wrapper.dispatch_size);
         llvm_in_range = b.CreateAndReduce(llvm_in_range);
         llvm_in_range->setName("thread_id.in.range");
-        // branch
-        auto llvm_loop_body_block = llvm::BasicBlock::Create(_llvm_context, "loop.body", llvm_wrapper_function);
-        auto llvm_loop_update_block = llvm::BasicBlock::Create(_llvm_context, "loop.update", llvm_wrapper_function);
-        b.CreateCondBr(llvm_in_range, llvm_loop_body_block, llvm_loop_update_block);
-        // loop body
-        b.SetInsertPoint(llvm_loop_body_block);
-        // call the kernel
-        auto call_args = llvm_args;
+        return {
+            .thread_id = llvm_thread_id,
+            .dispatch_id = llvm_dispatch_id,
+            .in_range = llvm_in_range,
+        };
+    }
+
+    static llvm::Value *_invoke_kernel_function(const KernelWrapper &llvm_wrapper, llvm::Function *llvm_kernel,
+                                                IRBuilder &b, const KernelInvokeIndex &llvm_invoke_index) noexcept {
+        auto call_args = llvm_wrapper.args;
         for (auto i = 0u; i < CurrentFunction::builtin_variable_count; i++) {
             switch (i) {
-                case CurrentFunction::builtin_variable_index_thread_id: call_args.emplace_back(llvm_thread_id); break;
-                case CurrentFunction::builtin_variable_index_block_id: call_args.emplace_back(llvm_block_id); break;
-                case CurrentFunction::builtin_variable_index_dispatch_id: call_args.emplace_back(llvm_dispatch_id); break;
-                case CurrentFunction::builtin_variable_index_block_size: call_args.emplace_back(llvm_block_size); break;
-                case CurrentFunction::builtin_variable_index_dispatch_size: call_args.emplace_back(llvm_dispatch_size); break;
+                case CurrentFunction::builtin_variable_index_thread_id: call_args.emplace_back(llvm_invoke_index.thread_id); break;
+                case CurrentFunction::builtin_variable_index_block_id: call_args.emplace_back(llvm_wrapper.block_id); break;
+                case CurrentFunction::builtin_variable_index_dispatch_id: call_args.emplace_back(llvm_invoke_index.dispatch_id); break;
+                case CurrentFunction::builtin_variable_index_block_size: call_args.emplace_back(llvm_wrapper.block_size); break;
+                case CurrentFunction::builtin_variable_index_dispatch_size: call_args.emplace_back(llvm_wrapper.dispatch_size); break;
                 default: LUISA_ERROR_WITH_LOCATION("Invalid builtin variable index.");
             }
         }
         auto llvm_call = b.CreateCall(llvm_kernel, call_args);
         llvm_call->setCallingConv(llvm::CallingConv::Fast);
+        return llvm_call;
+    }
+
+    [[nodiscard]] llvm::Function *_translate_kernel_function(const xir::KernelFunction *f) noexcept {
+        // void kernel_wrapper(Params *params, LaunchConfig *config) {
+        // entry:
+        //   ...
+        //   br loop;
+        //   i = alloca i32
+        //   store 0, i
+        // loop:
+        //   load i
+        //   thread_id_x = i % block_size.x;
+        //   thread_id_y = (i / block_size.x) % block_size.y;
+        //   thread_id_z = i / (block_size.x * block_size.y);
+        //   thread_id = (thread_id_x, thread_id_y, thread_id_z);
+        //   dispatch_id = block_id * block_size + thread_id;
+        //   in_range = reduce_and(dispatch_id < dispatch_size);
+        //   br in_range, body, update;
+        // body:
+        //   call f(params, thread_id, block_id, dispatch_id, block_size, dispatch_size);
+        //   br update;
+        // update:
+        //   next_i = i + 1;
+        //   store next_i, i
+        //   br next_i < thread_count, loop, merge;
+        // merge:
+        //   ret;
+        // }
+
+        // create the kernel function
+        auto llvm_kernel = _translate_function_definition(f, llvm::Function::PrivateLinkage, "kernel", false);
+
+        // create the wrapper function
+        auto llvm_wrapper = _create_kernel_wrapper(f);
+
+        // thread-in-block loop
+        IRBuilder b{llvm_wrapper.entry_block};
+        auto llvm_i_alloca = b.CreateAlloca(b.getInt32Ty(), nullptr, "loop.i.alloca");
+        b.CreateStore(b.getInt32(0), llvm_i_alloca);
+
+        // loop head
+        auto llvm_loop_block = llvm::BasicBlock::Create(_llvm_context, "loop.head", llvm_wrapper.func);
+        b.CreateBr(llvm_loop_block);
+        b.SetInsertPoint(llvm_loop_block);
+
+        // compute thread id
+        auto llvm_i = b.CreateLoad(b.getInt32Ty(), llvm_i_alloca, "loop.i");
+        auto llvm_invoke_index = _compute_kernel_invoke_index(llvm_wrapper, b, llvm_i);
+
+        // branch
+        auto llvm_loop_body_block = llvm::BasicBlock::Create(_llvm_context, "loop.body", llvm_wrapper.func);
+        auto llvm_loop_update_block = llvm::BasicBlock::Create(_llvm_context, "loop.update", llvm_wrapper.func);
+        b.CreateCondBr(llvm_invoke_index.in_range, llvm_loop_body_block, llvm_loop_update_block);
+
+        // loop body
+        b.SetInsertPoint(llvm_loop_body_block);
+        _invoke_kernel_function(llvm_wrapper, llvm_kernel, b, llvm_invoke_index);
         b.CreateBr(llvm_loop_update_block);
+
         // loop update
         b.SetInsertPoint(llvm_loop_update_block);
         auto llvm_next_i = b.CreateNUWAdd(llvm_i, b.getInt32(1), "loop.i.next");
-        b.CreateStore(llvm_next_i, llvm_ptr_i);
-        auto llvm_loop_cond = b.CreateICmpULT(llvm_next_i, llvm_thread_count, "loop.cond");
-        auto llvm_loop_merge_block = llvm::BasicBlock::Create(_llvm_context, "loop.merge", llvm_wrapper_function);
+        b.CreateStore(llvm_next_i, llvm_i_alloca);
+        auto llvm_loop_cond = b.CreateICmpULT(llvm_next_i, llvm_wrapper.thread_count, "loop.cond");
+        auto llvm_loop_merge_block = llvm::BasicBlock::Create(_llvm_context, "loop.merge", llvm_wrapper.func);
         b.CreateCondBr(llvm_loop_cond, llvm_loop_block, llvm_loop_merge_block);
+
         // loop merge
         b.SetInsertPoint(llvm_loop_merge_block);
         b.CreateRetVoid();
-        // hoist the loop variable to the top
+
+        // hoist the alloca to the entry block and return the kernel wrapper
+        _move_llvm_inst_to_block_begin(llvm_i_alloca, llvm_wrapper.entry_block);
+        return llvm_wrapper.func;
+    }
+
+    [[nodiscard]] llvm::Function *_translate_kernel_function_coro(const xir::KernelFunction *f) noexcept {
+
+        // entry:
+        //   ...
+        //   %coro.frames = alloca [ ptr x thread_count ]
+        //   store zeroinitializer, %coro.frames
+        // init.head:
+        //   i = phi (0, next_i)
+        //   invoke_index = ...
+        //   cond_br (invoke_index.in_range, init.body, init.update)
+        // init.body:
+        //   coro.frams[i] = call kernel
+        //   br init.update
+        // init.update:
+        //   next_i = i + 1
+        //   cond_br i < thread_count, init.head, init.done
+        // init.done:
+
+        auto llvm_kernel = _translate_function_definition(f, llvm::Function::PrivateLinkage, "kernel", true);
+        auto llvm_wrapper = _create_kernel_wrapper(f);
+
+        IRBuilder b{llvm_wrapper.entry_block};
+
+        // useful types and constants
+        auto llvm_ptr_type = llvm::PointerType::get(_llvm_context, 0);
+        auto llvm_ptr_null = llvm::ConstantPointerNull::get(llvm_ptr_type);
+        auto llvm_void_type = llvm::Type::getVoidTy(_llvm_context);
+        auto llvm_i1_type = llvm::Type::getInt1Ty(_llvm_context);
+        auto llvm_i8_type = llvm::IntegerType::get(_llvm_context, 8);
+        auto llvm_i32_type = llvm::IntegerType::get(_llvm_context, 32);
+
+        // create the handle array
+        auto llvm_any_alive_alloca = b.CreateAlloca(llvm_i8_type);
+        auto llvm_handle_array = b.CreateAlloca(llvm_ptr_type, llvm_wrapper.thread_count, "coro.handle.array");
+
+        // initialize loop
+        auto init_loop_i_alloca = b.CreateAlloca(llvm_i32_type, nullptr, "init.loop.i");
+        b.CreateStore(b.getInt32(0), init_loop_i_alloca);
+        auto init_loop_head = llvm::BasicBlock::Create(_llvm_context, "init.loop.head", llvm_wrapper.func);
+        auto init_loop_body = llvm::BasicBlock::Create(_llvm_context, "init.loop.body", llvm_wrapper.func);
+        auto init_loop_update = llvm::BasicBlock::Create(_llvm_context, "init.loop.update", llvm_wrapper.func);
+        auto init_loop_exit = llvm::BasicBlock::Create(_llvm_context, "init.loop.exit", llvm_wrapper.func);
+        b.CreateBr(init_loop_head);
         {
-            auto &llvm_entry = llvm_wrapper_function->getEntryBlock();
-            auto &llvm_first_inst = llvm_entry.front();
-            llvm_ptr_i->moveBefore(&llvm_first_inst);
+            // init loop head
+            b.SetInsertPoint(init_loop_head);
+            auto llvm_i = b.CreateLoad(llvm_i32_type, init_loop_i_alloca, "init.loop.i");
+            auto llvm_handle_ptr = b.CreateInBoundsGEP(llvm_ptr_type, llvm_handle_array, llvm_i);
+            b.CreateStore(llvm_ptr_null, llvm_handle_ptr);
+            auto llvm_index = _compute_kernel_invoke_index(llvm_wrapper, b, llvm_i);
+            b.CreateCondBr(llvm_index.in_range, init_loop_body, init_loop_update);
+
+            // init loop body
+            b.SetInsertPoint(init_loop_body);
+            auto llvm_handle = _invoke_kernel_function(llvm_wrapper, llvm_kernel, b, llvm_index);
+            b.CreateStore(llvm_handle, llvm_handle_ptr);
+            b.CreateBr(init_loop_update);
+
+            // init loop update
+            b.SetInsertPoint(init_loop_update);
+            auto llvm_next_i = b.CreateAdd(llvm_i, b.getInt32(1), "init.loop.i.next", true, true);
+            b.CreateStore(llvm_next_i, init_loop_i_alloca);
+            auto llvm_init_loop_cond = b.CreateICmpULT(llvm_next_i, llvm_wrapper.thread_count, "init.loop.cond");
+            b.CreateCondBr(llvm_init_loop_cond, init_loop_head, init_loop_exit);
         }
-        return llvm_wrapper_function;
+
+        // resume loop
+        auto resume_loop_pre = llvm::BasicBlock::Create(_llvm_context, "resume.loop.pre", llvm_wrapper.func);
+        auto resume_loop_head = llvm::BasicBlock::Create(_llvm_context, "resume.loop.head", llvm_wrapper.func);
+        auto resume_loop_body = llvm::BasicBlock::Create(_llvm_context, "resume.loop.body", llvm_wrapper.func);
+        auto resume_loop_invoke = llvm::BasicBlock::Create(_llvm_context, "resume.loop.invoke", llvm_wrapper.func);
+        auto resume_loop_destroy = llvm::BasicBlock::Create(_llvm_context, "resume.loop.destroy", llvm_wrapper.func);
+        auto resume_loop_update = llvm::BasicBlock::Create(_llvm_context, "resume.loop.update", llvm_wrapper.func);
+        auto resume_loop_post = llvm::BasicBlock::Create(_llvm_context, "resume.loop.post", llvm_wrapper.func);
+
+        // main loop that checks all coroutine instances until they all done
+        b.SetInsertPoint(init_loop_exit);
+        b.CreateBr(resume_loop_pre);
+
+        b.SetInsertPoint(resume_loop_pre);
+        auto resume_loop_i_alloca = b.CreateAlloca(llvm_i32_type, nullptr, "resume.loop.i");
+        b.CreateStore(b.getInt32(0), resume_loop_i_alloca);
+        b.CreateStore(b.getInt8(0), llvm_any_alive_alloca);
+        b.CreateBr(resume_loop_head);
+        {
+            // resume loop head
+            b.SetInsertPoint(resume_loop_head);
+            auto llvm_i = b.CreateLoad(llvm_i32_type, resume_loop_i_alloca, "resume.loop.i");
+            auto llvm_handle_ptr = b.CreateInBoundsGEP(llvm_ptr_type, llvm_handle_array, llvm_i);
+            auto llvm_handle = b.CreateLoad(llvm_ptr_type, llvm_handle_ptr);
+            auto llvm_handle_is_null = b.CreateICmpEQ(llvm_handle, llvm_ptr_null);
+            b.CreateCondBr(llvm_handle_is_null, resume_loop_update, resume_loop_body);
+
+            b.SetInsertPoint(resume_loop_body);
+            auto llvm_handle_is_done = b.CreateIntrinsic(llvm_i1_type, llvm::Intrinsic::coro_done, {llvm_handle});
+            b.CreateCondBr(llvm_handle_is_done, resume_loop_destroy, resume_loop_invoke);
+
+            b.SetInsertPoint(resume_loop_invoke);
+            b.CreateIntrinsic(llvm_void_type, llvm::Intrinsic::coro_resume, {llvm_handle});
+            b.CreateStore(b.getInt8(1), llvm_any_alive_alloca);
+            b.CreateBr(resume_loop_update);
+
+            b.SetInsertPoint(resume_loop_destroy);
+            b.CreateIntrinsic(llvm_void_type, llvm::Intrinsic::coro_destroy, {llvm_handle});
+            b.CreateStore(llvm_ptr_null, llvm_handle_ptr);
+            b.CreateBr(resume_loop_update);
+
+            // resume loop update
+            b.SetInsertPoint(resume_loop_update);
+            auto llvm_next_i = b.CreateAdd(llvm_i, b.getInt32(1), "resume.loop.i.next", true, true);
+            b.CreateStore(llvm_next_i, resume_loop_i_alloca);
+            auto llvm_resume_loop_cond = b.CreateICmpULT(llvm_next_i, llvm_wrapper.thread_count, "resume.loop.cond");
+            b.CreateCondBr(llvm_resume_loop_cond, resume_loop_head, resume_loop_post);
+        }
+        auto exit_block = llvm::BasicBlock::Create(_llvm_context, "exit", llvm_wrapper.func);
+        b.SetInsertPoint(resume_loop_post);
+        auto llvm_any_alive = b.CreateLoad(llvm_i8_type, llvm_any_alive_alloca);
+        auto llvm_any_alive_is_zero = b.CreateICmpEQ(llvm_any_alive, b.getInt8(0));
+        b.CreateCondBr(llvm_any_alive_is_zero, exit_block, resume_loop_pre);
+
+        // hoist allocated variables to the entry block
+        _move_llvm_inst_to_block_begin(llvm_any_alive_alloca, llvm_wrapper.entry_block);
+        _move_llvm_inst_to_block_begin(llvm_handle_array, llvm_wrapper.entry_block);
+        _move_llvm_inst_to_block_begin(init_loop_i_alloca, llvm_wrapper.entry_block);
+        _move_llvm_inst_to_block_begin(resume_loop_i_alloca, llvm_wrapper.entry_block);
+
+        // return
+        b.SetInsertPoint(exit_block);
+        b.CreateRetVoid();
+        return llvm_wrapper.func;
     }
 
     [[nodiscard]] llvm::Function *_translate_function_definition(const xir::FunctionDefinition *f,
                                                                  llvm::Function::LinkageTypes linkage,
-                                                                 llvm::StringRef default_name) noexcept {
+                                                                 llvm::StringRef default_name,
+                                                                 bool requires_block_sync) noexcept {
         auto llvm_ret_type = _translate_type(f->type(), true);
+        auto llvm_ptr_type = llvm::PointerType::get(_llvm_context, 0);
+        if (requires_block_sync) {// block synchronization requires a coroutine, which always returns a pointer to the coroutine frame
+            LUISA_ASSERT(llvm_ret_type->isVoidTy(), "Block synchronization requires void return type.");
+            llvm_ret_type = llvm_ptr_type;
+        }
         llvm::SmallVector<llvm::Type *, 64u> llvm_arg_types;
         for (auto arg : f->arguments()) {
             if (arg->is_reference()) {
@@ -3357,8 +3729,137 @@ private:
                 current.builtin_variables[builtin] = &llvm_arg;
             }
         }
-        // translate body
-        static_cast<void>(_translate_basic_block(current, f->body_block()));
+
+        // if block synchronization is required, we need to create a coroutine
+        if (requires_block_sync) {
+
+            // add `presplitcoroutine` attribute to the function
+            llvm_func->setPresplitCoroutine();
+            llvm_func->setCoroDestroyOnlyWhenComplete();
+
+            // some llvm types and constants for convenience
+            auto llvm_token_type = llvm::Type::getTokenTy(_llvm_context);
+            auto llvm_void_type = llvm::Type::getVoidTy(_llvm_context);
+            auto llvm_i1_type = llvm::Type::getInt1Ty(_llvm_context);
+            auto llvm_i8_type = llvm::Type::getInt8Ty(_llvm_context);
+            auto llvm_i64_type = llvm::Type::getInt64Ty(_llvm_context);
+            auto llvm_i32_zero = llvm::ConstantInt::get(llvm_i32_type, 0);
+            auto llvm_token_none = llvm::ConstantTokenNone::get(_llvm_context);
+            auto llvm_ptr_null = llvm::ConstantPointerNull::get(llvm_ptr_type);
+            auto llvm_i1_true = llvm::ConstantInt::get(llvm_i1_type, 1);
+            auto llvm_i1_false = llvm::ConstantInt::get(llvm_i1_type, 0);
+
+            // coro.entry:
+            auto entry_block = llvm::BasicBlock::Create(_llvm_context, "coro.entry", llvm_func);
+            IRBuilder coro_builder{entry_block};
+            //   %id = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)
+            current.coro_token = coro_builder.CreateIntrinsic(
+                llvm_token_type, llvm::Intrinsic::coro_id,
+                {llvm_i32_zero, llvm_ptr_null, llvm_ptr_null, llvm_ptr_null});
+            //   if (i1 @llvm.coro.alloc(token %id)) { br coro.dyn.alloc } else { br coro.begin }
+            auto llvm_requires_dyn_alloc = coro_builder.CreateIntrinsic(
+                llvm_i1_type, llvm::Intrinsic::coro_alloc, {current.coro_token});
+            auto llvm_coro_dyn_alloc_block = llvm::BasicBlock::Create(_llvm_context, "coro.dyn.alloc", llvm_func);
+            auto llvm_coro_begin_block = llvm::BasicBlock::Create(_llvm_context, "coro.begin", llvm_func);
+            coro_builder.CreateCondBr(llvm_requires_dyn_alloc, llvm_coro_dyn_alloc_block, llvm_coro_begin_block);
+
+            // coro.dyn.alloc:
+            coro_builder.SetInsertPoint(llvm_coro_dyn_alloc_block);
+            //   %size = call i32 @llvm.coro.size.i32()
+            auto llvm_coro_size = coro_builder.CreateIntrinsic(
+                llvm_i32_type, llvm::Intrinsic::coro_size, {});
+            //   %alloc = call ptr @luisa.coro.alloc(i64 %size)
+            auto llvm_coro_size_i64 = coro_builder.CreateZExt(llvm_coro_size, llvm_i64_type);
+            auto llvm_luisa_coro_alloc = _llvm_module->getOrInsertFunction(
+                "luisa.coro.alloc", llvm::FunctionType::get(llvm_ptr_type, {llvm_i64_type}, false));
+            {
+                auto llvm_luisa_coro_alloc_func = llvm::cast<llvm::Function>(llvm_luisa_coro_alloc.getCallee());
+                llvm_luisa_coro_alloc_func->addFnAttr(llvm::Attribute::NoCallback);
+                llvm_luisa_coro_alloc_func->setNoSync();
+                llvm_luisa_coro_alloc_func->setDoesNotThrow();
+                llvm_luisa_coro_alloc_func->setDoesNotRecurse();
+                llvm_luisa_coro_alloc_func->setDoesNotFreeMemory();
+                llvm_luisa_coro_alloc_func->setOnlyAccessesInaccessibleMemory();
+                llvm_luisa_coro_alloc_func->setWillReturn();
+                llvm_luisa_coro_alloc_func->setMustProgress();
+                llvm_luisa_coro_alloc_func->setReturnDoesNotAlias();
+            }
+            auto llvm_dyn_coro_handle = coro_builder.CreateCall(llvm_luisa_coro_alloc, {llvm_coro_size_i64});
+            //   br coro.begin
+            coro_builder.CreateBr(llvm_coro_begin_block);
+
+            // coro.begin:
+            coro_builder.SetInsertPoint(llvm_coro_begin_block);
+            //   %frame = phi ptr [ %alloc, coro.dyn.alloc ], [ null, entry ]
+            auto llvm_coro_frame = coro_builder.CreatePHI(llvm_ptr_type, 2);
+            llvm_coro_frame->addIncoming(llvm_dyn_coro_handle, llvm_coro_dyn_alloc_block);
+            llvm_coro_frame->addIncoming(llvm_ptr_null, entry_block);
+            //   %handle = call ptr @llvm.coro.begin(token %id, ptr %frame)
+            current.coro_handle = coro_builder.CreateIntrinsic(
+                llvm_ptr_type, llvm::Intrinsic::coro_begin, {current.coro_token, llvm_coro_frame});
+            // will br func.body later
+
+            // now we create the coroutine exit block (i.e., final suspend)
+            current.exit_block = llvm::BasicBlock::Create(_llvm_context, "coro.exit", llvm_func);
+
+            // coro.exit:
+            coro_builder.SetInsertPoint(current.exit_block);
+            //   %signal = call i8 @llvm.coro.suspend(token none, i1 true)
+            auto llvm_coro_signal = coro_builder.CreateIntrinsic(
+                llvm_i8_type, llvm::Intrinsic::coro_suspend, {llvm_token_none, llvm_i1_true});
+            // switch i8 %signal, label %coro.suspend [i8 0, label %coro.unreachable
+            //                                         i8 1, label %coro.cleanup]
+            current.coro_suspend_block = llvm::BasicBlock::Create(_llvm_context, "coro.suspend", llvm_func);
+            current.coro_cleanup_block = llvm::BasicBlock::Create(_llvm_context, "coro.cleanup", llvm_func);
+            auto llvm_coro_unreachable_block = llvm::BasicBlock::Create(_llvm_context, "coro.unreachable", llvm_func);
+            auto llvm_coro_switch = coro_builder.CreateSwitch(llvm_coro_signal, current.coro_suspend_block, 2);
+            llvm_coro_switch->addCase(llvm::ConstantInt::get(llvm_i8_type, 0), llvm_coro_unreachable_block);
+            llvm_coro_switch->addCase(llvm::ConstantInt::get(llvm_i8_type, 1), current.coro_cleanup_block);
+
+            // coro.unreachable:
+            coro_builder.SetInsertPoint(llvm_coro_unreachable_block);
+            //   unreachable
+            coro_builder.CreateUnreachable();
+
+            // coro.cleanup:
+            coro_builder.SetInsertPoint(current.coro_cleanup_block);
+            //   %mem = call ptr @llvm.coro.free(token %id, ptr %hdl)
+            auto llvm_coro_mem = coro_builder.CreateIntrinsic(
+                llvm_ptr_type, llvm::Intrinsic::coro_free,
+                {current.coro_token, current.coro_handle});
+            //   if (%mem != null) { br coro.dyn.free } else { br coro.suspend }
+            auto llvm_coro_dyn_free_block = llvm::BasicBlock::Create(_llvm_context, "coro.dyn.free", llvm_func);
+            auto llvm_coro_free_cond = coro_builder.CreateICmpNE(llvm_coro_mem, llvm_ptr_null);
+            coro_builder.CreateCondBr(llvm_coro_free_cond, llvm_coro_dyn_free_block, current.coro_suspend_block);
+
+            // coro.dyn.free:
+            coro_builder.SetInsertPoint(llvm_coro_dyn_free_block);
+            //   call void @luisa.coro.free(ptr %mem)
+            // luisa.coro.free does nothing so we can just ignore it
+            // auto llvm_luisa_coro_free = _llvm_module->getOrInsertFunction(
+            //     "luisa.coro.free", llvm::FunctionType::get(llvm_void_type, {llvm_ptr_type}, false));
+            // coro_builder.CreateCall(llvm_luisa_coro_free, {llvm_coro_mem});
+            //   br coro.suspend
+            coro_builder.CreateBr(current.coro_suspend_block);
+
+            // coro.suspend:
+            coro_builder.SetInsertPoint(current.coro_suspend_block);
+            //   %unused = call i1 @llvm.coro.end(ptr %hdl, i1 false, token none)
+            auto llvm_coro_end = coro_builder.CreateIntrinsic(
+                llvm_i1_type, llvm::Intrinsic::coro_end,
+                {current.coro_handle, llvm_i1_false, llvm_token_none});
+            // ret ptr %hdl
+            coro_builder.CreateRet(current.coro_handle);
+
+            // finally we can create the function body and br to it
+            auto llvm_func_body_block = _translate_basic_block(current, f->body_block());
+            coro_builder.SetInsertPoint(llvm_coro_begin_block);
+            coro_builder.CreateBr(llvm_func_body_block);
+
+        } else {// otherwise, we may translate the body directly
+            static_cast<void>(_translate_basic_block(current, f->body_block()));
+        }
+
         // fill the phi nodes
         {
             IRBuilder b{_llvm_context};
@@ -3367,12 +3868,19 @@ private:
                 b.SetInsertPoint(llvm_phi);
                 for (auto i = 0u; i < phi->incoming_count(); i++) {
                     auto incoming = phi->incoming(i);
-                    auto llvm_incoming_block = _find_or_create_basic_block(current, incoming.block);
                     auto llvm_incoming_value = _lookup_value(current, b, incoming.value);
+                    auto llvm_incoming_block = _find_or_create_basic_block(current, incoming.block);
+                    // handle incoming block redirections due to block synchronization
+                    for (;;) {
+                        auto iter = current.phi_incoming_overrides.find(llvm_incoming_block);
+                        if (iter == current.phi_incoming_overrides.end()) { break; }
+                        llvm_incoming_block = iter->second;
+                    }
                     llvm_phi->addIncoming(llvm_incoming_value, llvm_incoming_block);
                 }
             }
         }
+
         // we should hoist all alloca instructions to the beginning of the function
         {
             luisa::vector<llvm::AllocaInst *> alloca_insts;
@@ -3388,7 +3896,7 @@ private:
             // move alloca instructions to the beginning of the function
             auto &llvm_entry = llvm_func->getEntryBlock();
             for (auto inst : alloca_insts) {
-                inst->moveBefore(&llvm_entry.front());
+                _move_llvm_inst_to_block_begin(inst, &llvm_entry);
             }
         }
         // return
@@ -3396,7 +3904,7 @@ private:
     }
 
     [[nodiscard]] llvm::Function *_translate_callable_function(const xir::CallableFunction *f) noexcept {
-        return _translate_function_definition(f, llvm::Function::PrivateLinkage, "callable");
+        return _translate_function_definition(f, llvm::Function::PrivateLinkage, "callable", false);
     }
 
     [[nodiscard]] llvm::Function *_translate_function(const xir::Function *f) noexcept {
@@ -3405,8 +3913,12 @@ private:
         }
         auto llvm_func = [&] {
             switch (f->derived_function_tag()) {
-                case xir::DerivedFunctionTag::KERNEL:
-                    return _translate_kernel_function(static_cast<const xir::KernelFunction *>(f));
+                case xir::DerivedFunctionTag::KERNEL: {
+                    auto k = static_cast<const xir::KernelFunction *>(f);
+                    return _analyze_requires_sync_block(k) ?
+                               _translate_kernel_function_coro(k) :
+                               _translate_kernel_function(k);
+                }
                 case xir::DerivedFunctionTag::CALLABLE:
                     return _translate_callable_function(static_cast<const xir::CallableFunction *>(f));
                 case xir::DerivedFunctionTag::EXTERNAL: LUISA_NOT_IMPLEMENTED();
@@ -3431,7 +3943,10 @@ public:
         _llvm_module = llvm_module;
         _translate_module(module);
         _reset();
-        return {.print_inst_map = std::exchange(_print_inst_map, {})};
+        return {
+            .print_inst_map = std::exchange(_print_inst_map, {}),
+            .debug_callback_map = std::exchange(_debug_callback_map, {}),
+        };
     }
 };
 

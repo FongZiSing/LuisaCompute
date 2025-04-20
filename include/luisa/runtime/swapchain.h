@@ -44,6 +44,11 @@ public:
         return _storage;
     }
     [[nodiscard]] Present present(ImageView<float> frame) const noexcept;
+    SwapchainCreationInfo release() noexcept {
+        return SwapchainCreationInfo{
+            Resource::release(),
+            _storage};
+    }
 };
 
 LUISA_MARK_STREAM_EVENT_TYPE(Swapchain::Present)

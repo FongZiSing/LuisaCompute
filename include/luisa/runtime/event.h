@@ -36,6 +36,7 @@ public:
     Event() noexcept = default;
     ~Event() noexcept override;
     using Resource::operator bool;
+    using Resource::release;
     Event(Event &&) noexcept;
     Event(Event const &) noexcept = delete;
     Event &operator=(Event &&rhs) noexcept {
@@ -69,6 +70,7 @@ public:
     TimelineEvent() noexcept = default;
     ~TimelineEvent() noexcept override;
     using Resource::operator bool;
+    using Resource::release;
     TimelineEvent(TimelineEvent &&) noexcept;
     TimelineEvent(TimelineEvent const &) noexcept = delete;
     TimelineEvent &operator=(TimelineEvent &&rhs) noexcept {

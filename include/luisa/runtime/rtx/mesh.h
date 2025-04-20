@@ -118,6 +118,7 @@ public:
     }
     Mesh &operator=(Mesh const &) noexcept = delete;
     using Resource::operator bool;
+    using Resource::release;
     // build triangle based bottom-level acceleration structure
     [[nodiscard]] luisa::unique_ptr<Command> build(BuildRequest request = BuildRequest::PREFER_UPDATE) noexcept;
 

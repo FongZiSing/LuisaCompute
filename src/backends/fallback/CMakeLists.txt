@@ -14,7 +14,7 @@ if (LLVM_FOUND AND embree_FOUND)
     message(STATUS "Build with fallback backend (LLVM ${LLVM_VERSION}, Embree ${embree_VERSION})")
 
     set(LUISA_COMPUTE_ENABLE_FALLBACK ON)
-    set(LC_BACKEND_FALLBACK_SRC
+    set(LUISA_FALLBACK_BACKEND_SOURCES
             fallback_device.cpp
             fallback_device_api.cpp
             fallback_device_api_ir_module.cpp
@@ -37,7 +37,7 @@ if (LLVM_FOUND AND embree_FOUND)
             fallback_tex_compress.cpp
     )
 
-    luisa_compute_add_backend(fallback SOURCES ${LC_BACKEND_FALLBACK_SRC})
+    luisa_compute_add_backend(fallback SOURCES ${LUISA_FALLBACK_BACKEND_SOURCES})
 
     # exclude codegen from unity build since it's too big
     set_source_files_properties(fallback_codegen.cpp PROPERTIES UNITY_BUILD OFF)
@@ -46,13 +46,15 @@ if (LLVM_FOUND AND embree_FOUND)
             luisa-compute-xir
             luisa-compute-vulkan-swapchain
             embree)
+    separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+    target_compile_definitions(luisa-compute-backend-fallback PRIVATE ${LLVM_DEFINITIONS_LIST})
 
     target_compile_definitions(luisa-compute-backend-fallback PRIVATE
             LUISA_COMPUTE_FALLBACK_EMBREE_VERSION=${embree_VERSION_MAJOR})
 
-    option(LUISA_COMPUTE_ENABLE_SYSTEM_PARALLEL_FOR "Enable system parallel_for" OFF)
-    if (LUISA_COMPUTE_ENABLE_SYSTEM_PARALLEL_FOR)
-        target_compile_definitions(luisa-compute-backend-fallback PRIVATE LUISA_COMPUTE_ENABLE_SYSTEM_PARALLEL_FOR=1)
+    option(LUISA_COMPUTE_USE_SYSTEM_PARALLEL_FOR "Enable system parallel_for" OFF)
+    if (LUISA_COMPUTE_USE_SYSTEM_PARALLEL_FOR)
+        target_compile_definitions(luisa-compute-backend-fallback PRIVATE LUISA_COMPUTE_USE_SYSTEM_PARALLEL_FOR=1)
         # use libdispatch or TBB for parallel_for on non-Apple Unix systems if available
         if (UNIX AND NOT APPLE)
             # libdispatch
@@ -75,7 +77,7 @@ if (LLVM_FOUND AND embree_FOUND)
     endif ()
 
     # LLVM
-    target_include_directories(luisa-compute-backend-fallback PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_include_directories(luisa-compute-backend-fallback AFTER PRIVATE ${LLVM_INCLUDE_DIRS})
     llvm_map_components_to_libnames(LLVM_LIBS core executionengine support orcjit nativecodegen irreader passes analysis coroutines)
     if (UNIX AND NOT APPLE)
         # check if the libraries exist

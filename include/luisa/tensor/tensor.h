@@ -1,17 +1,110 @@
-#pragma
+#pragma once
 #include <luisa/core/dll_export.h>
 #include <luisa/core/stl/memory.h>
-#include <luisa/dsl/syntax.h>
-namespace luisa::compute::tensor {
-class LC_TENSOR_API JitSession {
-    class Impl;
+#include <luisa/core/pool.h>
+#include <luisa/runtime/buffer.h>
+#include <luisa/runtime/byte_buffer.h>
+#include <luisa/tensor/fused_activation.h>
+namespace luisa::compute {
+
+enum struct TensorElementType : uint8_t {
+    Float16,
+    Float32,
+    Float64,
+};
+class LC_TENSOR_API TensorData {
+    luisa::span<size_t const> _sizes;
+    TensorElementType _type;
+    uint64_t _idx;
+    size_t _size_bytes;
+
 public:
-    // TODO: move to private
-    JitSession() noexcept;
-    JitSession &get() noexcept;
-    Stream &stream() noexcept;
+    TensorData(luisa::span<size_t const> sizes,
+               TensorElementType element_type,
+               uint64_t uid) noexcept;
+    TensorData(TensorData &&rhs) noexcept;
+
+    TensorData(TensorData const &rhs) = delete;
+
+    [[nodiscard]] uint64_t idx() const noexcept {
+        return _idx;
+    }
+    [[nodiscard]] size_t get_size(uint dimension) const noexcept {
+        if (dimension >= _sizes.size()) return 1;
+        return _sizes[dimension];
+    }
+    [[nodiscard]] size_t dimension() const noexcept {
+        return _sizes.size();
+    }
+    [[nodiscard]] size_t size_bytes() const noexcept {
+        return _size_bytes;
+    }
+    [[nodiscard]] TensorElementType element_type() const noexcept {
+        return _type;
+    }
 };
 
+class TensorBuilder;
+
+class LC_TENSOR_API Tensor {
+    friend class TensorBuilder;
+
+    TensorData *_data;
+    bool _contained;
+
+public:
+    Tensor(TensorData *data,
+           bool contained = true) noexcept;
+    Tensor(Tensor &&rhs) noexcept;
+    ~Tensor() noexcept;
+    Tensor &operator=(Tensor &&rhs) noexcept {
+        if (&rhs == this) [[unlikely]]
+            return *this;
+        std::destroy_at(this);
+        new (this) Tensor(std::move(rhs));
+    }
+    [[nodiscard]] auto data() const noexcept { return _data; }
+    void dispose() noexcept;
+
+    [[nodiscard]] static Tensor one(TensorElementType element_type, luisa::span<const size_t> sizes) noexcept;
+    [[nodiscard]] static Tensor zero(TensorElementType element_type, luisa::span<const size_t> sizes) noexcept;
+
+    [[nodiscard]] static Tensor gemm(
+        Tensor const &lhs,
+        Tensor const &rhs,
+        FusedActivation const &activation,
+        TensorElementType out_type) noexcept;
+
+    [[nodiscard]] static Tensor conv_1d(
+        Tensor const &input,
+        Tensor const &weight,
+        FusedActivation const &activation,
+        TensorElementType out_type,
+        uint filter_radius,
+        uint dilation,
+        uint start_padding = std::numeric_limits<uint>::max(),
+        uint end_padding = std::numeric_limits<uint>::max()) noexcept;
+
+    [[nodiscard]] static Tensor conv_2d(
+        Tensor const &input,
+        Tensor const &weight,
+        FusedActivation const &activation,
+        TensorElementType out_type,
+        uint2 filter_radius,
+        uint2 dilation,
+        uint2 start_padding = uint2(std::numeric_limits<uint>::max()),
+        uint2 end_padding = uint2(std::numeric_limits<uint>::max())) noexcept;
+
+    [[nodiscard]] static Tensor conv_3d(
+        Tensor const &input,
+        Tensor const &weight,
+        FusedActivation const &activation,
+        TensorElementType out_type,
+        uint3 filter_radius,
+        uint3 dilation,
+        uint3 start_padding = uint3(std::numeric_limits<uint>::max()),
+        uint3 end_padding = uint3(std::numeric_limits<uint>::max())) noexcept;
+};
 
 // class DTensor {
 //     Device &device;
@@ -75,4 +168,4 @@ public:
 //     // TODO: implement
 // }
 
-}// namespace luisa::compute::tensor
+}// namespace luisa::compute

@@ -34,9 +34,9 @@ private:
         _hoisted;
 
 private:
-    void _collect_leaked_variables(luisa::unordered_set<const Expression *> &collected,
-                                   luisa::unordered_set<const FunctionBuilder *> &visited,
-                                   const FunctionBuilder &f) noexcept {
+    static void _collect_leaked_variables(luisa::unordered_set<const Expression *> &collected,
+                                          luisa::unordered_set<const FunctionBuilder *> &visited,
+                                          const FunctionBuilder &f) noexcept {
         if (!visited.emplace(&f).second) { return; }
         traverse_expressions<true>(
             f.body(),
@@ -106,8 +106,8 @@ private:
                 auto &&a = f.arguments()[i];
                 auto &&b = f.bound_arguments()[i];
                 auto copy = luisa::visit(
-                    [&](auto &&bb) noexcept -> const RefExpr * {
-                        using T = std::remove_cvref_t<decltype(bb)>;
+                    [&]<typename B>(B &&bb) noexcept -> const RefExpr * {
+                        using T = std::remove_cvref_t<B>;
                         if constexpr (std::is_same_v<T, Function::BufferBinding>) {
                             return fb->buffer_binding(a.type(), bb.handle, bb.offset, bb.size);
                         } else if constexpr (std::is_same_v<T, Function::TextureBinding>) {
@@ -211,17 +211,17 @@ private:
                 args.reserve(e->arguments().size());
                 for (auto arg : e->arguments()) { args.emplace_back(_dup_expr(arg)); }
                 if (e->is_builtin()) {
-                    copy = fb->call(e->type(), e->op(), args);
+                    copy = fb->call(e->type(), e->op(), args, e->curve_basis_set());
                 } else if (e->is_custom()) {
                     auto callee = _duplicate(*e->custom().builder());
                     copy = fb->call(e->type(), callee->function(), args);
                 } else if (e->is_external()) {
                     auto &o = _contexts.back()->original;
                     auto iter = std::find_if(
-                        o.external_callables().cbegin(),
-                        o.external_callables().cend(),
+                        o.external_callables().begin(),
+                        o.external_callables().end(),
                         [ext = e->external()](auto &&f) noexcept { return *f == *ext; });
-                    LUISA_ASSERT(iter != o.external_callables().cend(),
+                    LUISA_ASSERT(iter != o.external_callables().end(),
                                  "External function not found in context.");
                     copy = fb->call(e->type(), *iter, args);
                 } else {
@@ -247,6 +247,12 @@ private:
             }
             case Expression::Tag::CPUCUSTOM: LUISA_NOT_IMPLEMENTED();
             case Expression::Tag::GPUCUSTOM: LUISA_NOT_IMPLEMENTED();
+            case Expression::Tag::FUNC_REF: {
+                auto e = static_cast<const FuncRefExpr *>(original);
+                auto f = _duplicate(*e->func());
+                copy = fb->func_ref(f->function());
+                break;
+            }
         }
         _contexts.back()->expr_map.emplace(original, copy);
         return copy;
@@ -377,6 +383,16 @@ private:
                 args.reserve(s->arguments().size());
                 for (auto arg : s->arguments()) { args.emplace_back(_dup_expr(arg)); }
                 fb->print_(luisa::string{s->format()}, args);
+                break;
+            }
+            case Statement::Tag::DEBUG_BREAK: {
+                auto s = static_cast<const DebugBreakStmt *>(stmt);
+                luisa::vector<const Expression *> watches;
+                watches.reserve(s->watches().size());
+                for (auto watch : s->watches()) {
+                    watches.emplace_back(_dup_expr(watch));
+                }
+                fb->debug_break_(s->wrapper(), watches);
                 break;
             }
         }

@@ -20,7 +20,7 @@ public:
 private:
     size_t _size{};
     size_t _element_stride{};
-    size_t _tile_size{};
+    size_t _tile_size_bytes{};
 
 private:
     friend class Device;
@@ -29,7 +29,7 @@ private:
         : Resource{device, Tag::SPARSE_BUFFER, info},
           _size{info.total_size_bytes / info.element_stride},
           _element_stride{info.element_stride},
-          _tile_size{info.tile_size_bytes} {}
+          _tile_size_bytes{info.tile_size_bytes} {}
     SparseBuffer(DeviceInterface *device, size_t size) noexcept
         : SparseBuffer{
               device,
@@ -45,6 +45,12 @@ public:
     ~SparseBuffer() noexcept override {
         if (*this) { device()->destroy_sparse_buffer(handle()); }
     }
+    SparseBufferCreationInfo release() noexcept {
+        SparseBufferCreationInfo r{Resource::release()};
+        r.element_stride = _element_stride;
+        r.tile_size_bytes = _tile_size_bytes;
+        return r;
+    }
     SparseBuffer(SparseBuffer &&) noexcept = default;
     SparseBuffer(SparseBuffer const &) noexcept = delete;
     SparseBuffer &operator=(SparseBuffer &&rhs) noexcept {
@@ -53,7 +59,7 @@ public:
     }
     [[nodiscard]] auto map_tile(uint start_tile, uint tile_count, const SparseBufferHeap &heap) noexcept {
         _check_is_valid();
-        detail::check_sparse_buffer_map(size_bytes(), _tile_size, start_tile, tile_count);
+        detail::check_sparse_buffer_map(size_bytes(), _tile_size_bytes, start_tile, tile_count);
         return SparseUpdateTile{
             .handle = handle(),
             .operations = SparseBufferMapOperation{
@@ -63,7 +69,7 @@ public:
     }
     [[nodiscard]] auto unmap_tile(uint start_tile, uint tile_count) noexcept {
         _check_is_valid();
-        detail::check_sparse_buffer_unmap(size_bytes(), _tile_size, start_tile);
+        detail::check_sparse_buffer_unmap(size_bytes(), _tile_size_bytes, start_tile);
         return SparseUpdateTile{
             .handle = handle(),
             .operations = SparseBufferUnMapOperation{
@@ -88,7 +94,11 @@ public:
     }
     [[nodiscard]] auto tile_size() const noexcept {
         _check_is_valid();
-        return _tile_size;
+        return _tile_size_bytes / sizeof(T);
+    }
+    [[nodiscard]] auto tile_size_bytes() const noexcept {
+        _check_is_valid();
+        return _tile_size_bytes;
     }
     [[nodiscard]] auto view() const noexcept {
         _check_is_valid();

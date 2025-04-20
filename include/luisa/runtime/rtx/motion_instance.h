@@ -46,6 +46,8 @@ public:
         _move_from(std::move(rhs));
         return *this;
     }
+    using Resource::operator bool;
+    using Resource::release;
     void set_keyframe(size_t index, const MotionInstanceTransform &transform) noexcept;
     void set_keyframe(size_t index, const MotionInstanceTransformMatrix &transform) noexcept;
     void set_keyframe(size_t index, const MotionInstanceTransformSRT &transform) noexcept;

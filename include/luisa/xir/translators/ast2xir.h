@@ -11,8 +11,7 @@ namespace luisa::compute::xir {
 
 class AST2XIRContext;
 
-struct AST2XIRConfig {
-};
+struct AST2XIRConfig {};
 
 using ASTFunction = compute::Function;
 using ASTExternalFunction = compute::ExternalFunction;

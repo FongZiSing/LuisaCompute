@@ -3,10 +3,12 @@ set(LUISA_COMPUTE_XIR_SOURCES
         basic_block.cpp
         builder.cpp
         constant.cpp
+        debug_printer.cpp
         function.cpp
         instruction.cpp
         metadata.cpp
         module.cpp
+        op.cpp
         pool.cpp
         special_register.cpp
         undefined.cpp
@@ -27,11 +29,11 @@ set(LUISA_COMPUTE_XIR_SOURCES
         instructions/cast.cpp
         instructions/clock.cpp
         instructions/continue.cpp
+        instructions/debug_break.cpp
         instructions/gep.cpp
         instructions/if.cpp
         instructions/load.cpp
         instructions/loop.cpp
-        instructions/op_name_map.cpp
         instructions/outline.cpp
         instructions/phi.cpp
         instructions/print.cpp
@@ -48,6 +50,7 @@ set(LUISA_COMPUTE_XIR_SOURCES
         metadata/location.cpp
         metadata/comment.cpp
         metadata/name.cpp
+        metadata/curve_basis.cpp
 
         # translators
         translators/ast2xir.cpp
@@ -64,10 +67,11 @@ set(LUISA_COMPUTE_XIR_SOURCES
         passes/sroa.cpp
         passes/trace_gep.cpp
         passes/aggregate_field_bitmask.cpp
+        passes/early_return_elimination.cpp
         passes/pointer_usage.cpp
+        passes/lex_scope_analysis.cpp
         passes/local_store_forward.cpp
         passes/local_load_elimination.cpp
-        passes/early_return_elimination.cpp
         passes/lower_ray_query_loop.cpp
         passes/mem2reg.cpp
         passes/autodiff.cpp
@@ -92,9 +96,14 @@ set_target_properties(luisa-compute-xir PROPERTIES
 luisa_compute_install(xir)
 
 if (LUISA_COMPUTE_ENABLE_XIR_TESTS)
+
     add_executable(test_aggregate_field_bitmasks tests/test_aggregate_field_bitmasks.cpp)
     target_link_libraries(test_aggregate_field_bitmasks PRIVATE luisa-compute-xir)
 
     add_executable(test_mem2reg tests/test_mem2reg.cpp)
     target_link_libraries(test_mem2reg PRIVATE luisa::compute)
+
+    add_executable(test_debug_printer tests/test_debug_printer.cpp)
+    target_link_libraries(test_debug_printer PRIVATE luisa::compute)
+
 endif ()

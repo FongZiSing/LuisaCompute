@@ -4,19 +4,115 @@
 #include <thread>
 #include <cstdlib>
 
-#include <nvtx3/nvToolsExtCuda.h>
-
 #include <luisa/core/clock.h>
 #include <luisa/core/binary_io.h>
 #include <luisa/core/string_scratch.h>
+#include <luisa/core/logging.h>
 #include <luisa/runtime/rhi/sampler.h>
 #include <luisa/runtime/bindless_array.h>
 #include <luisa/runtime/dispatch_buffer.h>
+#include <luisa/ast/function_builder.h>
 
 #ifdef LUISA_ENABLE_IR
 #include <luisa/ir/ir2ast.h>
 #include <luisa/ir/ast2ir.h>
 #include <luisa/ir/transform.h>
+#endif
+
+#ifdef LUISA_ENABLE_XIR
+
+#include <luisa/xir/translators/ast2xir.h>
+#include <luisa/xir/translators/xir2text.h>
+#include <luisa/xir/instructions/print.h>
+#include <luisa/xir/passes/dce.h>
+#include <luisa/xir/passes/local_store_forward.h>
+#include <luisa/xir/passes/local_load_elimination.h>
+#include <luisa/xir/passes/mem2reg.h>
+#include <luisa/xir/passes/reg2mem.h>
+#include <luisa/xir/passes/promote_ref_arg.h>
+#include <luisa/xir/passes/lower_ray_query_loop.h>
+
+#include "cuda_codegen_xir.h"
+
+namespace luisa::compute::cuda {
+
+namespace {
+
+const bool LUISA_SHOULD_DUMP_XIR = [] {
+    if (auto env = getenv("LUISA_DUMP_XIR")) {
+        return std::string_view{env} == "1";
+    }
+    return false;
+}();
+
+const bool LUISA_USE_EXPERIMENTAL_XIR_CODEGEN = [] {
+    if (auto env = getenv("LUISA_EXPERIMENTAL_XIR_CODEGEN")) {
+        return std::string_view{env} == "1";
+    }
+    return false;
+}();
+
+[[nodiscard]] auto luisa_cuda_backend_translate_ast_to_xir(Function kernel, const ShaderOption &option) noexcept {
+    Clock translate_clk;
+    auto xir_module = xir::ast_to_xir_translate(kernel, {});
+    xir_module->set_name(luisa::format("kernel_{:016x}", kernel.hash()));
+    if (!option.name.empty()) { xir_module->set_location(option.name); }
+    LUISA_VERBOSE("AST to XIR translation done in {} ms.", translate_clk.toc());
+
+    // dump for debugging
+    if (LUISA_SHOULD_DUMP_XIR) {
+        auto filename = luisa::format("kernel.{:016x}.xir", kernel.hash());
+        std::ofstream f{filename.c_str()};
+        f << xir::xir_to_text_translate(xir_module.get(), true);
+    }
+
+    // run some simple optimization passes on XIR to reduce the size of LLVM IR
+    Clock opt_clk;
+    auto dce1_info = xir::dce_pass_run_on_module(xir_module.get());
+    auto store_forward_info = xir::local_store_forward_pass_run_on_module(xir_module.get());
+    auto load_elim_info = xir::local_load_elimination_pass_run_on_module(xir_module.get());
+    auto dce2_info = xir::dce_pass_run_on_module(xir_module.get());
+    auto promote_arg_info = xir::promote_ref_arg_pass_run_on_module(xir_module.get());
+    auto mem2reg_info = xir::mem2reg_pass_run_on_module(xir_module.get());
+    auto dce3_info = xir::dce_pass_run_on_module(xir_module.get());
+    if (LUISA_SHOULD_DUMP_XIR) {
+        auto filename = luisa::format("kernel.{:016x}.opt.xir", kernel.hash());
+        std::ofstream f{filename.c_str()};
+        f << xir::xir_to_text_translate(xir_module.get(), true);
+    }
+    auto rq_lower_info = xir::lower_ray_query_loop_pass_run_on_module(xir_module.get());
+    auto reg2mem_info = xir::reg2mem_pass_run_on_module(xir_module.get());
+    LUISA_VERBOSE("XIR optimization done in {} ms: "
+                  "forwarded {} store instruction(s), "
+                  "eliminated {} load instruction(s), "
+                  "promoted {} alloca instruction(s) with {} load and {} store instruction(s) removed and {} phi node(s) inserted, "
+                  "removed {} + {} + {} = {} dead instruction(s), "
+                  "promoted {} reference argument(s), "
+                  "lowered {} ray query loop(s), "
+                  "lowered {} phi node(s) to local variable(s).",
+                  opt_clk.toc(),
+                  store_forward_info.forwarded_instructions.size(),
+                  load_elim_info.eliminated_instructions.size(),
+                  mem2reg_info.promoted_alloca_instructions.size(), mem2reg_info.removed_load_instructions.size(), mem2reg_info.removed_store_instructions.size(), mem2reg_info.inserted_phi_instructions.size(),
+                  dce1_info.removed_instructions.size(), dce2_info.removed_instructions.size(), dce3_info.removed_instructions.size(),
+                  dce1_info.removed_instructions.size() + dce2_info.removed_instructions.size() + dce3_info.removed_instructions.size(),
+                  promote_arg_info.promoted_ref_args.size(),
+                  rq_lower_info.lowered_loops.size(),
+                  reg2mem_info.lowered_phi_nodes.size());
+
+    // dump for debugging
+    if (LUISA_SHOULD_DUMP_XIR) {
+        auto filename = luisa::format("kernel.{:016x}.opt.rq.xir", kernel.hash());
+        std::ofstream f{filename.c_str()};
+        f << xir::xir_to_text_translate(xir_module.get(), true);
+    }
+    return xir_module;
+}
+
+}
+
+}// namespace luisa::compute::cuda
+
 #endif
 
 #include "cuda_error.h"
@@ -54,20 +150,20 @@
 #ifndef NDEBUG
 #define LUISA_CUDA_DUMP_SOURCE 1
 #else
-static const bool LUISA_CUDA_DUMP_SOURCE = ([] {
+static const bool LUISA_CUDA_DUMP_SOURCE = [] {
     // read env LUISA_DUMP_SOURCE
     auto env = std::getenv("LUISA_DUMP_SOURCE");
     if (env == nullptr) return false;
     return std::string_view{env} == "1";
-})();
+}();
 #endif
 
-static const bool LUISA_CUDA_ENABLE_OPTIX_VALIDATION = ([] {
+static const bool LUISA_CUDA_ENABLE_OPTIX_VALIDATION = [] {
     // read env LUISA_OPTIX_VALIDATION
     auto env = std::getenv("LUISA_OPTIX_VALIDATION");
     if (env == nullptr) return false;
     return std::string_view{env} == "1";
-})();
+}();
 
 namespace luisa::compute::cuda {
 
@@ -305,7 +401,8 @@ void CUDADevice::destroy_buffer(uint64_t handle) noexcept {
     });
 }
 
-ResourceCreationInfo CUDADevice::create_texture(PixelFormat format, uint dimension, uint width, uint height, uint depth, uint mipmap_levels, bool simultaneous_access, bool allow_raster_target) noexcept {
+ResourceCreationInfo CUDADevice::create_texture(PixelFormat format, uint dimension, uint width, uint height, uint depth, uint mipmap_levels, void *external_native_handle, bool simultaneous_access, bool allow_raster_target) noexcept {
+    LUISA_ASSERT(external_native_handle == nullptr, "Not implemented.");
     auto p = with_handle([=] {
         auto array_format = cuda_array_format(format);
         auto channels = pixel_format_channel_count(format);
@@ -643,11 +740,31 @@ ShaderCreationInfo CUDADevice::create_shader(const ShaderOption &option, Functio
 
     // codegen
 
-    Clock clk;
     StringScratch scratch;
-    CUDACodegenAST codegen{scratch, !_cudadevrt_library.empty()};
-    codegen.emit(kernel, _compiler->device_library(), option.native_include);
-    LUISA_VERBOSE("Generated CUDA source in {} ms.", clk.toc());
+    auto print_formats = [&] {
+#ifdef LUISA_ENABLE_XIR
+        if (LUISA_USE_EXPERIMENTAL_XIR_CODEGEN) {
+            auto xir_module = luisa_cuda_backend_translate_ast_to_xir(kernel, option);
+            Clock clk;
+            CUDACodegenXIR codegen{scratch, !_cudadevrt_library.empty()};
+            codegen.emit(xir_module.get(), kernel.bound_arguments(),
+                         _compiler->device_library(), option.native_include);
+            LUISA_INFO("CUDA Codegen XIR generated source in {} ms.", clk.toc());
+            // dump for debugging
+            {
+                auto filename = luisa::format("kernel.{:016x}.cu", kernel.hash());
+                std::ofstream f{filename.c_str()};
+                f << scratch.string();
+            }
+            return std::move(codegen).move_print_formats();
+        }
+#endif
+        Clock clk;
+        CUDACodegenAST codegen{scratch, !_cudadevrt_library.empty()};
+        codegen.emit(kernel, _compiler->device_library(), option.native_include);
+        LUISA_VERBOSE("Generated CUDA source in {} ms.", clk.toc());
+        return std::move(codegen).move_print_formats();
+    }();
 
     // process bound arguments
     luisa::vector<ShaderDispatchCommand::Argument> bound_arguments;
@@ -769,16 +886,16 @@ ShaderCreationInfo CUDADevice::create_shader(const ShaderOption &option, Functio
         .argument_types = [kernel] {
             luisa::vector<luisa::string> types;
             types.reserve(kernel.arguments().size());
-            std::transform(kernel.arguments().cbegin(), kernel.arguments().cend(), std::back_inserter(types),
+            std::transform(kernel.arguments().begin(), kernel.arguments().end(), std::back_inserter(types),
                            [](auto &&arg) noexcept { return luisa::string{arg.type()->description()}; });
             return types; }(),
         .argument_usages = [kernel] {
             luisa::vector<Usage> usages;
             usages.reserve(kernel.arguments().size());
-            std::transform(kernel.arguments().cbegin(), kernel.arguments().cend(), std::back_inserter(usages),
+            std::transform(kernel.arguments().begin(), kernel.arguments().end(), std::back_inserter(usages),
                            [kernel](auto &&arg) noexcept { return kernel.variable_usage(arg.uid()); });
             return usages; }(),
-        .format_types = [fmt = codegen.print_formats()] {
+        .format_types = [&fmt = print_formats] {
             luisa::vector<std::pair<luisa::string, luisa::string>> t;
             t.reserve(fmt.size());
             for (auto &&[name, type] : fmt) {
@@ -820,7 +937,7 @@ ShaderCreationInfo CUDADevice::load_shader(luisa::string_view name_in,
         .argument_types = [arg_types] {
             luisa::vector<luisa::string> types;
             types.reserve(arg_types.size());
-            std::transform(arg_types.cbegin(), arg_types.cend(), std::back_inserter(types),
+            std::transform(arg_types.begin(), arg_types.end(), std::back_inserter(types),
                            [](auto &&arg) noexcept { return luisa::string{arg->description()}; });
             return types; }(),
     };

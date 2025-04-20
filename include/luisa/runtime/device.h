@@ -190,6 +190,11 @@ public:
     }
 
     template<typename T>
+    [[nodiscard]] auto import_external_image(PixelStorage pixel, void *external_native_handle, uint2 size, uint mip_levels = 1u, bool simultaneous_access = false, bool allow_raster_target = false) noexcept {
+        return _create<Image<T>>(pixel, external_native_handle, size, mip_levels, simultaneous_access, allow_raster_target);
+    }
+
+    template<typename T>
     [[nodiscard]] auto create_sparse_image(PixelStorage pixel, uint width, uint height, uint mip_levels = 1u, bool simultaneous_access = true) noexcept {
         return _create<SparseImage<T>>(pixel, make_uint2(width, height), mip_levels, simultaneous_access);
     }

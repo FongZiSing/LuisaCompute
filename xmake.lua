@@ -187,6 +187,12 @@ set_default(false)
 set_showmenu(true)
 option_end()
 
+option("lc_win_runtime")
+set_values(true, false)
+set_default(false)
+set_showmenu(true)
+option_end()
+
 option("llvm_path")
 set_default(false)
 set_showmenu(true)

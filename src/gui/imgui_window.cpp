@@ -699,6 +699,8 @@ public:
     }
 };
 
+ImGuiWindow::ImGuiWindow() noexcept = default;
+
 ImGuiWindow::ImGuiWindow(Device &device, Stream &stream,
                          luisa::string name,
                          const Config &config) noexcept

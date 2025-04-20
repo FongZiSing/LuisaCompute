@@ -89,7 +89,7 @@ static constexpr const std::array ewa_filter_weight_lut{
 }// namespace detail
 
 FallbackTexture::FallbackTexture(PixelStorage storage, uint dim, uint3 size, uint levels) noexcept
-    : _storage{storage}, _mip_levels{levels}, _dimension{dim} {
+    : _storage{static_cast<uint16_t>(storage)}, _mip_levels{levels}, _dimension{dim}, _is_external{false} {
     if (_dimension == 2u) {
         _pixel_stride_shift = std::bit_width(static_cast<uint>(pixel_storage_size(storage, make_uint3(1u)))) - 1u;
         if (storage == PixelStorage::BC6 || storage == PixelStorage::BC7) {
@@ -125,12 +125,53 @@ FallbackTexture::FallbackTexture(PixelStorage storage, uint dim, uint3 size, uin
     }
 }
 
-FallbackTexture::~FallbackTexture() noexcept { luisa::deallocate_with_allocator(_data); }
+FallbackTexture::FallbackTexture(PixelStorage storage, uint dim, uint3 size, uint levels, std::byte *external_buffer) noexcept
+    : _storage{static_cast<uint16_t>(storage)}, _mip_levels{levels}, _dimension{dim}, _is_external{true} {
+    if (_dimension == 2u) {
+        _pixel_stride_shift = std::bit_width(static_cast<uint>(pixel_storage_size(storage, make_uint3(1u)))) - 1u;
+        if (storage == PixelStorage::BC6 || storage == PixelStorage::BC7) {
+            _pixel_stride_shift = 0u;
+        }
+        _size[0] = size.x;
+        _size[1] = size.y;
+        _size[2] = 1u;
+        _mip_offsets[0] = 0u;
+        auto sz = make_uint2(size);
+        for (auto i = 1u; i < levels; i++) {
+            auto s = (sz + block_size - 1u) / block_size * block_size;
+            _mip_offsets[i] = _mip_offsets[i - 1u] + s.x * s.y;
+            sz = luisa::max(sz >> 1u, 1u);
+        }
+        auto s = (sz + block_size - 1u) / block_size * block_size;
+        auto size_pixels = _mip_offsets[levels - 1u] + s.x * s.y;
+        _data = external_buffer;
+    } else {
+        _pixel_stride_shift = std::bit_width(static_cast<uint>(pixel_storage_size(storage, make_uint3(1u)))) - 1u;
+        _size[0] = size.x;
+        _size[1] = size.y;
+        _size[2] = size.z;
+        _mip_offsets[0] = 0u;
+        for (auto i = 1u; i < levels; i++) {
+            auto s = (size + block_size - 1u) / block_size * block_size;
+            _mip_offsets[i] = _mip_offsets[i - 1u] + s.x * s.y * s.z;
+            size = luisa::max(size >> 1u, 1u);
+        }
+        auto s = (size + block_size - 1u) / block_size * block_size;
+        auto size_pixels = _mip_offsets[levels - 1u] + s.x * s.y * s.z;
+        _data = external_buffer;
+    }
+}
+
+FallbackTexture::~FallbackTexture() noexcept {
+    if (!_is_external) {
+        luisa::deallocate_with_allocator(_data);
+    }
+}
 
 FallbackTextureView FallbackTexture::view(uint level) const noexcept {
     auto size = luisa::max(make_uint3(_size[0], _size[1], _size[2]) >> level, 1u);
     return FallbackTextureView{_data + (static_cast<size_t>(_mip_offsets[level]) << _pixel_stride_shift),
-                               _dimension, size.x, size.y, size.z, _storage, _pixel_stride_shift};
+                               _dimension, size.x, size.y, size.z, storage(), _pixel_stride_shift};
 }
 
 // template<typename T>

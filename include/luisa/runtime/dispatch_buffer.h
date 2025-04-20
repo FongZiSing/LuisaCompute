@@ -46,6 +46,12 @@ public:
         _move_from(std::move(rhs));
         return *this;
     }
+    BufferCreationInfo release() noexcept {
+        return BufferCreationInfo{
+            Resource::release(),
+            1,
+            _byte_size};
+    }
     IndirectDispatchBuffer &operator=(IndirectDispatchBuffer const &) noexcept = delete;
     using Resource::operator bool;
     [[nodiscard]] auto capacity() const noexcept {

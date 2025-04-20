@@ -36,7 +36,7 @@ ResourceCreationInfo NativeResourceExtImpl::register_external_depth_buffer(
     // custom data see backends' header
     void *custom_data) noexcept {
     auto tex = _native->register_external_depth_buffer(depth_buffer_ptr, format, width, height, custom_data);
-    PixelFormat p_format;
+    PixelFormat p_format = {};
     switch (format) {
         case DepthFormat::D16:
             p_format = PixelFormat::R16F;
@@ -50,6 +50,8 @@ ResourceCreationInfo NativeResourceExtImpl::register_external_depth_buffer(
         case DepthFormat::D32S8A24:
             p_format = PixelFormat::RG32UInt;
             break;
+        case DepthFormat::None:
+            LUISA_ERROR_WITH_LOCATION("Depth format is not specified.");
     }
     new Texture{tex.handle, 2, false, uint3(0, 0, 0), p_format};
     return tex;

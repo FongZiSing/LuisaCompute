@@ -37,5 +37,6 @@ public:
     uint GetGlobalUAVIndex(uint mipLevel) const override;
     void AllocateTile(uint3 coord, uint3 size, uint mipLevel, uint64 alloc, UpdateTileTracker* tile_tracker) const;
     void DeAllocateTile(uint3 coord, uint3 size, uint mipLevel, UpdateTileTracker* tile_tracker) const;
+    bool AllowSimulAccess() const override { return true; }
 };
 }// namespace lc::dx

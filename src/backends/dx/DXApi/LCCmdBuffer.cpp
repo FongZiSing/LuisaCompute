@@ -57,7 +57,7 @@ void DecodeCmd(vstd::span<const Argument> args, Visitor &&visitor) {
 class LCPreProcessVisitor : public CommandVisitor {
 public:
     CommandBufferBuilder *bd;
-    ResourceStateTracker *stateTracker;
+    EnhancedBarrierTracker *stateTracker;
     vstd::vector<std::pair<size_t, size_t>> *argVecs;
     vstd::vector<uint8_t> *argBuffer;
     vstd::vector<BottomAccelData> *bottomAccelDatas;
@@ -69,13 +69,17 @@ public:
         buildAccelSize += size;
     }
     void UniformAlign(size_t align) const {
+#ifdef LUISA_USE_SYSTEM_STL
+        argBuffer->resize(CalcAlign(argBuffer->size(), align));
+#else
         argBuffer->resize_uninitialized(CalcAlign(argBuffer->size(), align));
+#endif
     }
     template<typename T>
     void EmplaceData(T const &data) {
         size_t sz = argBuffer->size();
-        argBuffer->push_back_uninitialized(sizeof(T));
-        using PlaceHolder = eastl::aligned_storage_t<sizeof(T), 1>;
+        luisa::enlarge_by(*argBuffer, sizeof(T));
+        using PlaceHolder = luisa::aligned_storage_t<sizeof(T), 1>;
         *reinterpret_cast<PlaceHolder *>(argBuffer->data() + sz) =
             *reinterpret_cast<PlaceHolder const *>(&data);
     }
@@ -83,26 +87,47 @@ public:
     void EmplaceData(T const *data, size_t size) {
         size_t sz = argBuffer->size();
         auto byteSize = size * sizeof(T);
-        argBuffer->push_back_uninitialized(byteSize);
+        luisa::enlarge_by(*argBuffer, byteSize);
         std::memcpy(argBuffer->data() + sz, data, byteSize);
     }
     struct Visitor {
         LCPreProcessVisitor *self;
         SavedArgument const *arg;
         ShaderDispatchCommandBase const &cmd;
+        EnhancedBarrierTracker::Usage uav_usage;
+        EnhancedBarrierTracker::Usage read_usage;
+        EnhancedBarrierTracker::Usage accel_read_usage;
+        Visitor(
+            LCPreProcessVisitor *self,
+            SavedArgument const *arg,
+            ShaderDispatchCommandBase const &cmd,
+            bool is_raster) : self(self), arg(arg), cmd(cmd) {
+            if (is_raster) {
+                uav_usage = EnhancedBarrierTracker::Usage::RasterUAV;
+                read_usage = EnhancedBarrierTracker::Usage::RasterRead;
+                accel_read_usage = EnhancedBarrierTracker::Usage::RasterAccelRead;
+            } else {
+                uav_usage = EnhancedBarrierTracker::Usage::ComputeUAV;
+                read_usage = EnhancedBarrierTracker::Usage::ComputeRead;
+                accel_read_usage = EnhancedBarrierTracker::Usage::ComputeAccelRead;
+            }
+        }
         void operator()(Argument::Buffer const &bf) {
             auto res = reinterpret_cast<Buffer const *>(bf.handle);
             if (((uint)arg->varUsage & (uint)Usage::WRITE) != 0) {
                 LUISA_ASSERT(is_device_buffer(res), "Unordered access buffer can not be host-buffer.");
-                self->stateTracker->RecordState(
-                    res,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    true);
+                self->stateTracker->Record(
+                    BufferView{res, bf.offset, bf.size},
+                    uav_usage);
+                // self->stateTracker->RecordState(
+                //     res,
+                //     D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                //     true);
             } else {
                 if (is_device_buffer(res))
-                    self->stateTracker->RecordState(
-                        res,
-                        self->stateTracker->ReadState(ResourceReadUsage::Srv));
+                    self->stateTracker->Record(
+                        BufferView{res, bf.offset, bf.size},
+                        read_usage);
                 else {
                     LUISA_ASSERT(res->GetTag() == Resource::Tag::UploadBuffer, "Only upload-buffer allowed as shader's resource.");
                 }
@@ -113,39 +138,41 @@ public:
             auto rt = reinterpret_cast<TextureBase *>(bf.handle);
             //UAV
             if (((uint)arg->varUsage & (uint)Usage::WRITE) != 0) {
-                self->stateTracker->RecordState(
-                    rt,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    true);
+                self->stateTracker->Record(
+                    EnhancedBarrierTracker::TexView{rt, bf.level},
+                    uav_usage);
             }
             // SRV
             else {
-                self->stateTracker->RecordState(
-                    rt,
-                    self->stateTracker->ReadState(ResourceReadUsage::Srv, rt));
+                self->stateTracker->Record(
+                    EnhancedBarrierTracker::TexView{rt, bf.level},
+                    read_usage);
             }
             ++arg;
         }
         void operator()(Argument::BindlessArray const &bf) {
             auto arr = reinterpret_cast<BindlessArray *>(bf.handle);
-            vstd::fixed_vector<Resource const *, 16> writeMap;
-            {
-                arr->Lock();
-                auto unlocker = vstd::scope_exit([&] {
-                    arr->Unlock();
-                });
-                for (auto &&i : self->stateTracker->WriteStateMap()) {
-                    if (arr->IsPtrInBindless(reinterpret_cast<size_t>(i))) {
-                        writeMap.emplace_back(i);
-                    }
+            vstd::fixed_vector<vstd::HashMap<Resource const *, size_t>::Index, 16> writeMap;
+            auto &write_state_map = self->stateTracker->WriteStateMap();
+            arr->Lock();
+            for (auto iter = write_state_map.begin(); iter != write_state_map.end(); ++iter) {
+                auto &i = *iter;
+                if (arr->IsPtrInBindless(reinterpret_cast<size_t>(i.first))) {
+                    writeMap.emplace_back(write_state_map.get_index(iter));
                 }
             }
-            if (!writeMap.empty()) {
-                auto readState = self->stateTracker->ReadState(ResourceReadUsage::Srv);
-                for (auto &&i : writeMap) {
-                    self->stateTracker->RecordState(i, readState);
-                }
+            arr->Unlock();
+
+            for (auto &&iter : writeMap) {
+                self->stateTracker->Record(
+                    iter.key(),
+                    EnhancedBarrierTracker::Range(0, iter.value()),
+                    read_usage);
+                write_state_map.remove(iter);
             }
+            self->stateTracker->Record(
+                BufferView(arr->BindlessBuffer()),
+                read_usage);
             ++arg;
         }
         void operator()(Argument::Uniform const &a) {
@@ -163,125 +190,161 @@ public:
             auto accel = reinterpret_cast<TopAccel *>(bf.handle);
             if (accel->GetInstBuffer()) {
                 if (((uint)arg->varUsage & (uint)Usage::WRITE) != 0) {
-                    self->stateTracker->RecordState(
-                        accel->GetInstBuffer(),
-                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                        true);
+                    self->stateTracker->Record(
+                        BufferView{accel->GetInstBuffer(), 0, accel->GetInstBuffer()->GetByteSize()},
+                        uav_usage);
                 } else {
-                    self->stateTracker->RecordState(
-                        accel->GetInstBuffer(),
-                        self->stateTracker->ReadState(ResourceReadUsage::Srv));
-                    self->stateTracker->RecordState(
-                        accel->GetAccelBuffer(),
-                        D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+                    self->stateTracker->Record(
+                        BufferView{accel->GetInstBuffer(), 0, accel->GetInstBuffer()->GetByteSize()},
+                        read_usage);
+                    self->stateTracker->Record(
+                        BufferView{accel->GetAccelBuffer(), 0, accel->GetAccelBuffer()->GetByteSize()},
+                        accel_read_usage);
                 }
             }
             ++arg;
         }
     };
     void visit(const DXCustomCmd *cmd) noexcept {
+        auto get_resource_view = [&](auto &&i) {
+            return luisa::visit(
+                [&]<typename T>(T const &t) -> EnhancedBarrierTracker::ResourceView {
+                    using PureT = std::remove_cvref_t<T>;
+                    if constexpr (std::is_same_v<PureT, Argument::Buffer>) {
+                        return EnhancedBarrierTracker::ResourceView{
+                            BufferView{
+                                static_cast<Buffer const *>(reinterpret_cast<Resource const *>(t.handle)),
+                                t.offset,
+                                t.size}};
+                    } else if constexpr (std::is_same_v<PureT, Argument::Texture>) {
+                        return EnhancedBarrierTracker::ResourceView{
+                            EnhancedBarrierTracker::TexView{
+                                static_cast<TextureBase const *>(reinterpret_cast<Resource const *>(t.handle)),
+                                t.level}};
+                    } else {
+                        auto buffer = static_cast<BindlessArray const *>(reinterpret_cast<Resource const *>(t.handle))->BindlessBuffer();
+                        return EnhancedBarrierTracker::ResourceView{
+                            BufferView{
+                                buffer,
+                                0,
+                                buffer->GetByteSize()}};
+                    }
+                },
+                i.resource);
+        };
         for (auto &&i : cmd->get_resource_usages()) {
-            uint64_t handle =
-                luisa::visit(
-                    [](auto &&t) -> uint64_t {
-                        return t.handle;
-                    },
-                    i.resource);
-            stateTracker->RecordState(reinterpret_cast<Resource const *>(handle), i.required_state,
-                                      (i.required_state & (D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) != 0);
+            auto res_view = get_resource_view(i);
+            stateTracker->Record(res_view, i.required_state);
+        }
+        for (auto &&i : cmd->get_enhanced_resource_usages()) {
+            auto res_view = get_resource_view(i);
+            stateTracker->Record(
+                res_view,
+                i.sync,
+                i.access,
+                i.texture_layout);
         }
     }
     void visit(const BufferUploadCommand *cmd) noexcept override {
         auto res = reinterpret_cast<Buffer const *>(cmd->handle());
-        if (is_device_buffer(res))
-            stateTracker->RecordState(res, D3D12_RESOURCE_STATE_COPY_DEST);
-        else {
+        if (is_device_buffer(res)) {
+            stateTracker->Record(
+                BufferView(res, cmd->offset(), cmd->size()),
+                EnhancedBarrierTracker::Usage::CopyDest);
+            // stateTracker->RecordState(res, D3D12_RESOURCE_STATE_COPY_DEST);
+        } else {
             LUISA_ERROR("Host-buffer should not be used to upload.");
         }
     }
     void visit(const BufferDownloadCommand *cmd) noexcept override {
         auto res = reinterpret_cast<Buffer const *>(cmd->handle());
-        if (is_device_buffer(res))
-            stateTracker->RecordState(res, stateTracker->ReadState(ResourceReadUsage::CopySource));
-        else {
+        if (is_device_buffer(res)) {
+            stateTracker->Record(
+                BufferView(res, cmd->offset(), cmd->size()),
+                EnhancedBarrierTracker::Usage::CopySource);
+        } else {
             LUISA_ERROR("Host-buffer should not be used to download.");
         }
     }
     void visit(const BufferCopyCommand *cmd) noexcept override {
         auto srcBf = reinterpret_cast<Buffer const *>(cmd->src_handle());
         auto dstBf = reinterpret_cast<Buffer const *>(cmd->dst_handle());
-        if (is_device_buffer(srcBf))
-            stateTracker->RecordState(srcBf, stateTracker->ReadState(ResourceReadUsage::CopySource));
-        else {
+        if (is_device_buffer(srcBf)) {
+            stateTracker->Record(
+                BufferView(srcBf, cmd->src_offset(), cmd->size()),
+                EnhancedBarrierTracker::Usage::CopySource);
+        } else {
             LUISA_ASSERT(srcBf->GetTag() == Resource::Tag::UploadBuffer, "Only upload-buffer allowed as copy source.");
         }
-        if (is_device_buffer(dstBf))
-            stateTracker->RecordState(dstBf, D3D12_RESOURCE_STATE_COPY_DEST);
-        else {
+        if (is_device_buffer(dstBf)) {
+            stateTracker->Record(
+                BufferView(dstBf, cmd->dst_offset(), cmd->size()),
+                EnhancedBarrierTracker::Usage::CopyDest);
+        } else {
             LUISA_ASSERT(dstBf->GetTag() == Resource::Tag::ReadbackBuffer, "Only non write-combined-buffer allowed as copy destination.");
         }
     }
     void visit(const BufferToTextureCopyCommand *cmd) noexcept override {
         auto rt = reinterpret_cast<TextureBase *>(cmd->texture());
         auto bf = reinterpret_cast<Buffer *>(cmd->buffer());
-        stateTracker->RecordState(
-            rt,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-        if (is_device_buffer(bf))
-            stateTracker->RecordState(
-                bf,
-                stateTracker->ReadState(ResourceReadUsage::CopySource));
-        else {
+        stateTracker->Record(
+            EnhancedBarrierTracker::TexView(rt, cmd->level()),
+            EnhancedBarrierTracker::Usage::CopyDest);
+        if (is_device_buffer(bf)) {
+            stateTracker->Record(
+                BufferView(bf, cmd->buffer_offset(), pixel_storage_size(cmd->storage(), cmd->size())),
+                EnhancedBarrierTracker::Usage::CopySource);
+        } else {
             LUISA_ASSERT(bf->GetTag() == Resource::Tag::UploadBuffer, "Only upload-buffer allowed as copy source.");
         }
     }
 
     void visit(const TextureUploadCommand *cmd) noexcept override {
         auto rt = reinterpret_cast<TextureBase *>(cmd->handle());
-        stateTracker->RecordState(
-            rt,
-            D3D12_RESOURCE_STATE_COPY_DEST);
+        stateTracker->Record(
+            EnhancedBarrierTracker::TexView(rt, cmd->level()),
+            EnhancedBarrierTracker::Usage::CopyDest);
     }
     void visit(const ClearDepthCommand *cmd) noexcept {
         auto rt = reinterpret_cast<TextureBase *>(cmd->handle());
-        stateTracker->RecordState(
-            rt,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        stateTracker->Record(
+            EnhancedBarrierTracker::TexView(rt, 0),
+            EnhancedBarrierTracker::Usage::DepthWrite);
     }
     void visit(const TextureDownloadCommand *cmd) noexcept override {
         auto rt = reinterpret_cast<TextureBase *>(cmd->handle());
-        stateTracker->RecordState(
-            rt,
-            stateTracker->ReadState(ResourceReadUsage::CopySource, rt));
+        stateTracker->Record(
+            EnhancedBarrierTracker::TexView(rt, cmd->level()),
+            EnhancedBarrierTracker::Usage::CopySource);
     }
     void visit(const TextureCopyCommand *cmd) noexcept override {
         auto src = reinterpret_cast<TextureBase *>(cmd->src_handle());
         auto dst = reinterpret_cast<TextureBase *>(cmd->dst_handle());
-        stateTracker->RecordState(
-            src,
-            stateTracker->ReadState(ResourceReadUsage::CopySource, src));
-        stateTracker->RecordState(
-            dst,
-            D3D12_RESOURCE_STATE_COPY_DEST);
+        stateTracker->Record(
+            EnhancedBarrierTracker::TexView(src, cmd->src_level()),
+            EnhancedBarrierTracker::Usage::CopySource);
+        stateTracker->Record(
+            EnhancedBarrierTracker::TexView(dst, cmd->dst_level()),
+            EnhancedBarrierTracker::Usage::CopyDest);
     }
     void visit(const TextureToBufferCopyCommand *cmd) noexcept override {
         auto rt = reinterpret_cast<TextureBase *>(cmd->texture());
         auto bf = reinterpret_cast<Buffer *>(cmd->buffer());
-        stateTracker->RecordState(
-            rt,
-            stateTracker->ReadState(ResourceReadUsage::CopySource, rt));
-        if (is_device_buffer(bf))
-            stateTracker->RecordState(
-                bf,
-                D3D12_RESOURCE_STATE_COPY_DEST);
-        else {
+        stateTracker->Record(
+            EnhancedBarrierTracker::TexView(rt, cmd->level()),
+            EnhancedBarrierTracker::Usage::CopySource);
+        if (is_device_buffer(bf)) {
+            stateTracker->Record(
+                BufferView(bf, cmd->buffer_offset(), pixel_storage_size(cmd->storage(), cmd->size())),
+                EnhancedBarrierTracker::Usage::CopyDest);
+        } else {
             LUISA_ASSERT(bf->GetTag() == Resource::Tag::ReadbackBuffer, "Only non write-combined-buffer allowed as copy destination.");
         }
     }
     void visit(const ShaderDispatchCommand *cmd) noexcept override {
         auto cs = reinterpret_cast<ComputeShader *>(cmd->handle());
         size_t beforeSize = argBuffer->size();
-        Visitor visitor{this, cs->Args().data(), *cmd};
+        Visitor visitor{this, cs->Args().data(), *cmd, false};
         DecodeCmd(cs->ArgBindings(), visitor);
         DecodeCmd(cmd->arguments(), visitor);
         UniformAlign(16);
@@ -289,7 +352,8 @@ public:
         argVecs->emplace_back(beforeSize, afterSize - beforeSize);
         if (cmd->is_indirect()) {
             auto buffer = reinterpret_cast<Buffer *>(cmd->indirect_dispatch().handle);
-            stateTracker->RecordState(buffer, stateTracker->ReadState(ResourceReadUsage::IndirectArgs));
+            stateTracker->Record(
+                BufferView(buffer, cmd->indirect_dispatch().offset / ComputeShader::DispatchIndirectStride, cmd->indirect_dispatch().max_dispatch_size / ComputeShader::DispatchIndirectStride), EnhancedBarrierTracker::Usage::IndirectArgs);
         }
     }
     void visit(const AccelBuildCommand *cmd) noexcept override {
@@ -348,6 +412,7 @@ public:
     void visit(const CurveBuildCommand *) noexcept override { /* TODO */
     }
     void visit(const BindlessArrayUpdateCommand *cmd) noexcept override {
+        // reinterpret_cast<BindlessArray *>(cmd->handle())->Bind(cmd->modifications());
         auto arr = reinterpret_cast<BindlessArray *>(cmd->handle());
         arr->PreProcessStates(
             *bd,
@@ -376,33 +441,38 @@ public:
         size_t beforeSize = argBuffer->size();
         auto rtvs = cmd->rtv_texs();
         auto dsv = cmd->dsv_tex();
-        DecodeCmd(cmd->arguments(), Visitor{this, cs->Args().data(), *cmd});
+        DecodeCmd(cmd->arguments(), Visitor{this, cs->Args().data(), *cmd, true});
         UniformAlign(16);
         size_t afterSize = argBuffer->size();
         argVecs->emplace_back(beforeSize, afterSize - beforeSize);
 
         for (auto &&mesh : cmd->scene()) {
             for (auto &&v : mesh.vertex_buffers()) {
-                stateTracker->RecordState(
-                    reinterpret_cast<Buffer *>(v.handle()),
-                    stateTracker->ReadState(ResourceReadUsage::VertexBufferForGraphics));
+                stateTracker->Record(
+                    BufferView(reinterpret_cast<Buffer *>(v.handle()), v.offset(), v.size()),
+                    EnhancedBarrierTracker::Usage::VertexRead);
             }
             auto &&i = mesh.index();
             if (i.index() == 0) {
-                stateTracker->RecordState(
-                    reinterpret_cast<Buffer *>(luisa::get<0>(i).handle()),
-                    stateTracker->ReadState(ResourceReadUsage::IndexBufferForGraphics));
+                auto &&idx = luisa::get<0>(i);
+                stateTracker->Record(
+                    BufferView(reinterpret_cast<Buffer *>(idx.handle()), idx.offset_bytes(), idx.size_bytes()),
+                    EnhancedBarrierTracker::Usage::IndexRead);
             }
         }
         for (auto &&i : rtvs) {
-            stateTracker->RecordState(
-                reinterpret_cast<TextureBase *>(i.handle),
-                D3D12_RESOURCE_STATE_RENDER_TARGET);
+            stateTracker->Record(
+                EnhancedBarrierTracker::TexView(
+                    reinterpret_cast<TextureBase *>(i.handle),
+                    i.level),
+                EnhancedBarrierTracker::Usage::RenderTarget);
         }
         if (dsv.handle != ~0ull) {
-            stateTracker->RecordState(
-                reinterpret_cast<TextureBase *>(dsv.handle),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE);
+            stateTracker->Record(
+                EnhancedBarrierTracker::TexView(
+                    reinterpret_cast<TextureBase *>(dsv.handle),
+                    dsv.level),
+                EnhancedBarrierTracker::Usage::DepthWrite);
         }
     }
 };
@@ -416,7 +486,7 @@ public:
     Device *device;
     luisa::function<void(luisa::string_view)> *logger;
     CommandBufferBuilder *bd;
-    ResourceStateTracker *stateTracker;
+    EnhancedBarrierTracker *stateTracker;
     BufferView argBuffer;
     Buffer const *accelScratchBuffer;
     std::pair<size_t, size_t> *accelScratchOffsets;
@@ -582,11 +652,17 @@ public:
                 data_buffer = alloc->GetTempDefaultBuffer(1024ull * 1024ull, 16);
                 readback_buffer = alloc->GetTempReadbackBuffer(1024ull * 1024ull, 16);
                 static_cast<UploadBuffer const *>(upload_buffer.buffer)->CopyData(upload_buffer.offset, {reinterpret_cast<uint8_t const *>(&zero), sizeof(uint)});
-                stateTracker->RecordState(count_buffer.buffer, D3D12_RESOURCE_STATE_COPY_DEST);
+                stateTracker->Record(
+                    BufferView(count_buffer.buffer, count_buffer.offset, count_buffer.byteSize),
+                    EnhancedBarrierTracker::Usage::CopyDest);
                 stateTracker->UpdateState(*bd);
                 bd->CopyBuffer(upload_buffer.buffer, count_buffer.buffer, upload_buffer.offset, count_buffer.offset, sizeof(uint));
-                stateTracker->RecordState(count_buffer.buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                stateTracker->RecordState(data_buffer.buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                stateTracker->Record(
+                    BufferView(count_buffer.buffer, count_buffer.offset, count_buffer.byteSize),
+                    EnhancedBarrierTracker::Usage::ComputeUAV);
+                stateTracker->Record(
+                    BufferView(data_buffer.buffer, count_buffer.offset, count_buffer.byteSize),
+                    EnhancedBarrierTracker::Usage::ComputeUAV);
                 stateTracker->UpdateState(*bd);
                 bindProps->emplace_back(count_buffer);
                 bindProps->emplace_back(data_buffer);
@@ -618,8 +694,12 @@ public:
                 *bindProps);
         }
         if (data_buffer.buffer != nullptr) [[unlikely]] {
-            stateTracker->RecordState(count_buffer.buffer, D3D12_RESOURCE_STATE_COPY_SOURCE);
-            stateTracker->RecordState(data_buffer.buffer, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            stateTracker->Record(
+                BufferView(count_buffer.buffer, count_buffer.offset, count_buffer.byteSize),
+                EnhancedBarrierTracker::Usage::CopySource);
+            stateTracker->Record(
+                BufferView(data_buffer.buffer, count_buffer.offset, count_buffer.byteSize),
+                EnhancedBarrierTracker::Usage::CopySource);
             stateTracker->UpdateState(*bd);
             bd->CopyBuffer(count_buffer.buffer, readback_count_buffer.buffer, count_buffer.offset, readback_count_buffer.offset, sizeof(uint));
             bd->CopyBuffer(data_buffer.buffer, readback_buffer.buffer, data_buffer.offset, readback_buffer.offset, data_buffer.byteSize);
@@ -631,7 +711,7 @@ public:
                         {reinterpret_cast<uint8_t *>(&size), sizeof(uint)});
                 if (size == 0) return;
                 vstd::vector<std::byte> data;
-                data.push_back_uninitialized(std::min<size_t>(readback_buffer.byteSize, size));
+                luisa::enlarge_by(data, std::min<size_t>(readback_buffer.byteSize, size));
                 static_cast<ReadbackBuffer const *>(readback_buffer.buffer)
                     ->CopyData(
                         readback_buffer.offset,
@@ -1056,12 +1136,10 @@ void LCCmdBuffer::Execute(
     auto funcs = std::move(cmdList).steal_callbacks();
     auto allocator = queue.CreateAllocator(maxAlloc);
     auto allocType = allocator->Type();
-    bool cmdListIsEmpty = true;
+    bool cmdListIsEmpty = commands.empty();
     {
         std::unique_lock lck{mtx};
-        tracker.listType = allocator->Type();
         LCPreProcessVisitor ppVisitor;
-        ppVisitor.stateTracker = &tracker;
         ppVisitor.argVecs = &argVecs;
         ppVisitor.argBuffer = &argBuffer;
         ppVisitor.bottomAccelDatas = &bottomAccelDatas;
@@ -1081,7 +1159,6 @@ void LCCmdBuffer::Execute(
         visitor.updateAccel = &updateAccel;
         visitor.vbv = &vbv;
         visitor.device = device;
-        visitor.stateTracker = &tracker;
         visitor.after_custom_cmd = [](Device *device, CommandBufferBuilder *bd) {
             ID3D12DescriptorHeap *h[2] = {
                 device->globalHeap->GetHeap(),
@@ -1093,9 +1170,23 @@ void LCCmdBuffer::Execute(
         };
         auto cmdBuffer = allocator->GetBuffer();
         auto cmdBuilder = cmdBuffer->Build();
+        if (!tracker) {
+            if (device->use_enhanced_barrier) {
+                tracker = luisa::make_unique<EnhancedBarrierTrackerImpl>();
+            } else {
+                tracker = luisa::make_unique<EnhancedBarrierTrackerBackup>();
+            }
+        }
+        tracker->listType = allocator->Type();
+        visitor.stateTracker = tracker.get();
+        ppVisitor.stateTracker = tracker.get();
         visitor.bd = &cmdBuilder;
         ppVisitor.bd = &cmdBuilder;
         for (auto &&command : commands) {
+            // if (command->tag() == Command::Tag::EBindlessArrayUpdateCommand) {
+            //     auto cmd = static_cast<BindlessArrayUpdateCommand const *>(command.get());
+            //     reinterpret_cast<BindlessArray *>(cmd->handle())->Bind(cmd->modifications());
+            // }
             command->accept(reorder);
         }
         auto cmdLists = reorder.command_lists();
@@ -1105,11 +1196,13 @@ void LCCmdBuffer::Execute(
         ID3D12DescriptorHeap *h[2] = {
             device->globalHeap->GetHeap(),
             device->samplerHeap->GetHeap()};
-        for (auto lst : cmdLists) {
+
+        // for (auto &&command : commands) {
+        for (auto &&lst : cmdLists) {
             if (allocType != D3D12_COMMAND_LIST_TYPE_COPY) {
                 cmdBuffer->CmdList()->SetDescriptorHeaps(vstd::array_count(h), h);
             }
-            cmdListIsEmpty = cmdListIsEmpty && (lst == nullptr);
+
             // Clear caches
             ppVisitor.argVecs->clear();
             ppVisitor.argBuffer->clear();
@@ -1117,9 +1210,12 @@ void LCCmdBuffer::Execute(
             ppVisitor.bottomAccelDatas->clear();
             ppVisitor.buildAccelSize = 0;
             // Preprocess: record resources' states
+            auto size = 0;
             for (auto i = lst; i != nullptr; i = i->p_next) {
+                size += 1;
                 i->cmd->accept(ppVisitor);
             }
+            // command->accept(ppVisitor);
             visitor.bottomAccelData = ppVisitor.bottomAccelDatas->data();
             DefaultBuffer const *accelScratchBuffer;
             if (ppVisitor.buildAccelSize) {
@@ -1134,18 +1230,18 @@ void LCCmdBuffer::Execute(
 // Use default buffer as arguments buffer
 #if false
                 auto uploadBuffer = allocator->GetTempDefaultBuffer(ppVisitor.argBuffer->size(), 16);
-                tracker.RecordState(
+                tracker->RecordState(
                     uploadBuffer.buffer,
                     D3D12_RESOURCE_STATE_COPY_DEST);
                 // Update recorded states
-                tracker.UpdateState(
+                tracker->UpdateState(
                     cmdBuilder);
                 cmdBuilder.Upload(
                     uploadBuffer,
                     ppVisitor.argBuffer->data());
-                tracker.RecordState(
+                tracker->RecordState(
                     uploadBuffer.buffer,
-                    tracker.ReadState(ResourceReadUsage::Srv));
+                    tracker->ReadState(ResourceReadUsage::Srv));
 #else
                 // use upload buffer maybe faster?
                 auto uploadBuffer = allocator->GetTempUploadBuffer(ppVisitor.argBuffer->size(), 16);
@@ -1158,19 +1254,20 @@ void LCCmdBuffer::Execute(
 #endif
                 visitor.argBuffer = uploadBuffer;
             }
-            tracker.UpdateState(
+            tracker->UpdateState(
                 cmdBuilder);
             visitor.bufferVec = ppVisitor.argVecs->data();
             // Execute commands
             for (auto i = lst; i != nullptr; i = i->p_next) {
                 i->cmd->accept(visitor);
             }
+            // command->accept(visitor);
+
             if (!updateAccel.empty()) {
-                tracker.ClearFence();
-                tracker.RecordState(
-                    accelScratchBuffer,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE);
-                tracker.UpdateState(cmdBuilder);
+                tracker->Record(
+                    BufferView(accelScratchBuffer),
+                    EnhancedBarrierTracker::Usage::CopySource);
+                tracker->UpdateState(cmdBuilder);
                 for (auto &&i : updateAccel) {
                     i.accel.visit([&](auto &&p) {
                         p->FinalCopy(
@@ -1181,7 +1278,7 @@ void LCCmdBuffer::Execute(
                                 i.size));
                     });
                 }
-                tracker.RestoreState(cmdBuilder);
+                tracker->RestoreState(cmdBuilder);
                 auto localUpdateAccel = std::move(updateAccel);
                 lck.unlock();
                 queue.ForceSync(
@@ -1194,10 +1291,10 @@ void LCCmdBuffer::Execute(
                 }
                 lck.lock();
             }
-            tracker.ClearFence();
         }
-        tracker.RestoreState(cmdBuilder);
+        tracker->RestoreState(cmdBuilder);
     }
+
     if (funcs.empty()) {
         if (cmdListIsEmpty)
             queue.ExecuteEmpty(std::move(allocator));
@@ -1220,7 +1317,6 @@ void LCCmdBuffer::Present(
     auto alloc = queue.CreateAllocator(maxAlloc);
     {
         std::lock_guard lck{mtx};
-        tracker.listType = alloc->Type();
         // swapchain->frameIndex = swapchain->swapChain->GetCurrentBackBufferIndex();
         auto &&rt = &swapchain->m_renderTargets[swapchain->frameIndex];
         swapchain->frameIndex += 1;
@@ -1228,12 +1324,32 @@ void LCCmdBuffer::Present(
         auto cb = alloc->GetBuffer();
         auto bd = cb->Build();
         auto cmdList = cb->CmdList();
-        tracker.RecordState(
-            rt, D3D12_RESOURCE_STATE_COPY_DEST);
-        tracker.RecordState(
-            img,
-            tracker.ReadState(ResourceReadUsage::CopySource, img));
-        tracker.UpdateState(bd);
+        {
+            D3D12_RESOURCE_BARRIER barriers[2];
+            D3D12_RESOURCE_BARRIER &img_barrier = barriers[0];
+            D3D12_RESOURCE_BARRIER &rt_barrier = barriers[1];
+
+            rt_barrier = D3D12_RESOURCE_BARRIER{
+                .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE};
+            img_barrier = D3D12_RESOURCE_BARRIER{
+                .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE};
+            rt_barrier.Transition.pResource = rt->GetResource();
+            rt_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+            rt_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            rt_barrier.Transition.Subresource = 0;
+            img_barrier.Transition.pResource = img->GetResource();
+            img_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+            img_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            img_barrier.Transition.Subresource = 0;
+            bd.GetCB()->CmdList()->ResourceBarrier(vstd::array_count(barriers), barriers);
+        }
+        // tracker->Record(
+        //     EnhancedBarrierTracker::ResourceView(rt), EnhancedBarrierTracker::Usage::CopyDest);
+        // tracker->Record(
+        //     EnhancedBarrierTracker::ResourceView(img), EnhancedBarrierTracker::Usage::CopySource);
+        // tracker->UpdateState(bd);
         D3D12_TEXTURE_COPY_LOCATION sourceLocation;
         sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         sourceLocation.SubresourceIndex = 0;
@@ -1247,7 +1363,27 @@ void LCCmdBuffer::Present(
             0, 0, 0,
             &sourceLocation,
             nullptr);
-        tracker.RestoreState(bd);
+        {
+            D3D12_RESOURCE_BARRIER barriers[2];
+            D3D12_RESOURCE_BARRIER &img_barrier = barriers[0];
+            D3D12_RESOURCE_BARRIER &rt_barrier = barriers[1];
+
+            rt_barrier = D3D12_RESOURCE_BARRIER{
+                .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE};
+            img_barrier = D3D12_RESOURCE_BARRIER{
+                .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE};
+            rt_barrier.Transition.pResource = rt->GetResource();
+            rt_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            rt_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+            rt_barrier.Transition.Subresource = 0;
+            img_barrier.Transition.pResource = img->GetResource();
+            img_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            img_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+            img_barrier.Transition.Subresource = 0;
+            bd.GetCB()->CmdList()->ResourceBarrier(vstd::array_count(barriers), barriers);
+        }
     }
     queue.ExecuteAndPresent(std::move(alloc), swapchain->swapChain.Get(), swapchain->vsync);
 }
@@ -1259,6 +1395,13 @@ void LCCmdBuffer::CompressBC(
     float alphaImportance,
     GpuAllocator *allocator,
     size_t maxAlloc) {
+    if (!tracker) {
+        if (device->use_enhanced_barrier) {
+            tracker = luisa::make_unique<EnhancedBarrierTrackerImpl>();
+        } else {
+            tracker = luisa::make_unique<EnhancedBarrierTrackerBackup>();
+        }
+    }
     alphaImportance = std::max<float>(std::min<float>(alphaImportance, 1), 0);// clamp<float>(alphaImportance, 0, 1);
     struct BCCBuffer {
         uint g_mip_level;
@@ -1299,8 +1442,8 @@ void LCCmdBuffer::CompressBC(
         auto alloc = queue.CreateAllocator(maxAlloc);
         {
             std::lock_guard lck{mtx};
-            tracker.listType = alloc->Type();
-            auto bufferReadState = tracker.ReadState(ResourceReadUsage::Srv);
+            tracker->listType = alloc->Type();
+            // auto bufferReadState = tracker->ReadState(ResourceReadUsage::Srv);
             auto cmdBuffer = alloc->GetBuffer();
             auto cmdBuilder = cmdBuffer->Build();
             ID3D12DescriptorHeap *h[2] = {
@@ -1310,17 +1453,19 @@ void LCCmdBuffer::CompressBC(
 
             BCCBuffer cbData{
                 .g_mip_level = level};
-            tracker.RecordState(rt, tracker.ReadState(ResourceReadUsage::Srv, rt));
+            tracker->Record(
+                EnhancedBarrierTracker::TexView(rt, level),
+                EnhancedBarrierTracker::Usage::ComputeRead);
             auto RunComputeShader = [&](ComputeShader const *cs, uint dispatchCount, BufferView const &inBuffer, BufferView const &outBuffer) {
                 auto cbuffer = alloc->GetTempUploadBuffer(sizeof(BCCBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
                 static_cast<UploadBuffer const *>(cbuffer.buffer)->CopyData(cbuffer.offset, {reinterpret_cast<uint8_t const *>(&cbData), sizeof(BCCBuffer)});
-                tracker.RecordState(
-                    inBuffer.buffer,
-                    bufferReadState);
-                tracker.RecordState(
-                    outBuffer.buffer,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                tracker.UpdateState(cmdBuilder);
+                tracker->Record(
+                    inBuffer,
+                    EnhancedBarrierTracker::Usage::ComputeRead);
+                tracker->Record(
+                    outBuffer,
+                    EnhancedBarrierTracker::Usage::ComputeUAV);
+                tracker->UpdateState(cmdBuilder);
                 BindProperty prop[4];
                 prop[0] = cbuffer;
                 prop[1] = DescriptorHeapView(device->globalHeap.get(), rt->GetGlobalSRVIndex());
@@ -1331,7 +1476,7 @@ void LCCmdBuffer::CompressBC(
                     uint3(dispatchCount, 1, 1),
                     {prop, 4});
             };
-            constexpr uint MAX_BLOCK_BATCH = 1024u * 512u;
+            constexpr uint MAX_BLOCK_BATCH = 1024u * 32u;
             if (isHDR)//bc6
             {
                 BufferView err1Buffer{&backBuffer};
@@ -1421,8 +1566,8 @@ void LCCmdBuffer::CompressBC(
                     numBlocks -= n;
                 }
             }
-            tracker.RecordState(outBufferPtr, D3D12_RESOURCE_STATE_COPY_SOURCE);
-            tracker.RestoreState(cmdBuilder);
+            tracker->Record(outBuffer, EnhancedBarrierTracker::Usage::CopySource);
+            tracker->RestoreState(cmdBuilder);
         }
         if (batch == batchNum - 1) {
             vstd::vector<vstd::function<void()>> callbacks;

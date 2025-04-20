@@ -5,10 +5,22 @@
 #include <luisa/runtime/rtx/triangle.h>
 #include <luisa/runtime/rtx/aabb.h>
 #include <luisa/api/api.h>
-#include <luisa/core/forget.h>
 #include <luisa/backends/ext/denoiser_ext.h>
 #include <utility>
-
+namespace luisa {
+/// @brief  forget a value. similar to std::mem::forget in rust.
+template<typename T>
+    requires std::is_rvalue_reference_v<T &&>
+void forget(T &&value) noexcept {
+    struct AlignedStorage {
+        alignas(T) std::byte _[sizeof(T)];
+    };
+    static_assert(sizeof(AlignedStorage) == sizeof(T));
+    static_assert(alignof(AlignedStorage) == alignof(T));
+    AlignedStorage s{};
+    new (s._) T{std::move(value)};
+}
+}// namespace luisa
 #define LUISA_RC_TOMBSTONE 0xdeadbeef
 
 // TODO: rewrite with runtime constructs, e.g., Stream, Event, BindlessArray...
@@ -330,7 +342,7 @@ LUISA_EXPORT_API void luisa_compute_device_destroy(LCDevice device) LUISA_NOEXCE
     auto handle = reinterpret_cast<DeviceInterface *>(device._0)->shared_from_this();
     LUISA_ASSERT(handle.use_count() == 2u, "Should have exactly 2 references.");
     luisa::shared_ptr<DeviceInterface> _copy;
-    std::memcpy(&_copy, &handle, sizeof(luisa::shared_ptr<DeviceInterface>));
+    std::memcpy(static_cast<void *>(&_copy), &handle, sizeof(luisa::shared_ptr<DeviceInterface>));
 }
 
 LUISA_EXPORT_API void *luisa_compute_device_native_handle(LCDevice device) LUISA_NOEXCEPT {
@@ -361,10 +373,11 @@ LUISA_EXPORT_API void luisa_compute_buffer_destroy(LCDevice device, LCBuffer buf
 LUISA_EXPORT_API LCCreatedResourceInfo luisa_compute_texture_create(LCDevice device,
                                                                     LCPixelFormat format, uint32_t dim,
                                                                     uint32_t w, uint32_t h, uint32_t d,
-                                                                    uint32_t mips, bool allow_simultaneous_access, bool allow_raster) LUISA_NOEXCEPT {
+                                                                    uint32_t mips,
+                                                                    bool allow_simultaneous_access, bool allow_raster) LUISA_NOEXCEPT {
     auto dev = reinterpret_cast<DeviceInterface *>(device._0);
     auto pixel_format = PixelFormat{(uint8_t)to_underlying(format)};
-    auto info = dev->create_texture(pixel_format, dim, w, h, d, mips, allow_simultaneous_access, allow_raster);
+    auto info = dev->create_texture(pixel_format, dim, w, h, d, mips, nullptr, allow_simultaneous_access, allow_raster);
     return LCCreatedResourceInfo{
         .handle = info.handle,
         .native_handle = info.native_handle,

@@ -289,31 +289,36 @@ inline void write_pixel(PixelStorage storage, std::byte *p, Vector<T, 4u> v) noe
 class FallbackTexture;
 class FallbackTextureView;
 
-class alignas(16u) FallbackTexture {
+class alignas(16) FallbackTexture {
+
 public:
     static constexpr auto block_size = 4u;
 
 private:
     std::byte *_data{nullptr};           // 8B
     std::array<uint16_t, 3u> _size{};    // 14B
-    PixelStorage _storage : 16u;         // 16B
-    uint _pixel_stride_shift : 8u;       // 18B
-    uint _mip_levels : 8u;               // 19B
-    uint _dimension : 8u;                // 20B
+    uint16_t _storage;                   // 16B
+    uint _pixel_stride_shift : 8u;       // 17B
+    uint _mip_levels : 8u;               // 18B
+    uint _dimension : 8u;                // 19B
+    uint _is_external : 8u;              // 20B
     std::array<uint, 15u> _mip_offsets{};// 80B
 
 public:
     FallbackTexture(PixelStorage storage, uint dim, uint3 size, uint levels) noexcept;
+    FallbackTexture(PixelStorage storage, uint dim, uint3 size, uint levels, std::byte *external_buffer) noexcept;
     ~FallbackTexture() noexcept;
     FallbackTexture(FallbackTexture &&) noexcept = delete;
     FallbackTexture(const FallbackTexture &) noexcept = delete;
     FallbackTexture &operator=(FallbackTexture &&) noexcept = delete;
     FallbackTexture &operator=(const FallbackTexture &) noexcept = delete;
     [[nodiscard]] FallbackTextureView view(uint level) const noexcept;
-    [[nodiscard]] auto native_handle() noexcept { return _data; }
-    [[nodiscard]] auto storage() const noexcept { return _storage; }
+    [[nodiscard]] auto native_handle() const noexcept { return _data; }
+    [[nodiscard]] auto storage() const noexcept { return static_cast<PixelStorage>(_storage); }
     [[nodiscard]] auto mip_levels() const noexcept { return _mip_levels; }
 };
+
+static_assert(sizeof(FallbackTexture) == 80u);
 
 class alignas(16u) FallbackTextureView {
 private:

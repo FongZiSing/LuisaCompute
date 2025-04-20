@@ -526,7 +526,9 @@ public:
     }
 
     ResourceCreationInfo create_texture(PixelFormat format, uint dimension, uint width, uint height, uint depth,
-                                        uint mipmap_levels, bool simultaneous_access, bool allow_raster_target) noexcept override {
+                                        uint mipmap_levels, void *external_native_handle,
+                                        bool simultaneous_access, bool allow_raster_target) noexcept override {
+        LUISA_ASSERT(external_native_handle == nullptr, "Not implemented.");
         api::CreatedResourceInfo texture =
             device.create_texture(device.device, (api::PixelFormat)format, dimension,
                                   width, height, depth, mipmap_levels, simultaneous_access, allow_raster_target);

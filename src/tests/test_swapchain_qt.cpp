@@ -1,6 +1,9 @@
 #include <QApplication>
 #include <QPushButton>
+#include <QWindow>
+#include <QScreen>
 #include <QMainWindow>
+#include <qpa/qplatformnativeinterface.h>
 
 #include <luisa/core/clock.h>
 #include <luisa/core/logging.h>
@@ -15,22 +18,6 @@
 
 using namespace luisa;
 using namespace luisa::compute;
-
-class Canvas : public QWidget {
-
-public:
-    [[nodiscard]] QPaintEngine *paintEngine() const override { return nullptr; }
-
-public:
-    explicit Canvas(QWidget *parent) noexcept : QWidget{parent} {
-        setAttribute(Qt::WA_NativeWindow);
-        setAttribute(Qt::WA_PaintOnScreen);
-        setAttribute(Qt::WA_OpaquePaintEvent);
-        setAttribute(Qt::WA_NoSystemBackground);
-        setAttribute(Qt::WA_DontCreateNativeAncestors);
-        setAutoFillBackground(true);
-    }
-};
 
 int main(int argc, char *argv[]) {
 
@@ -65,15 +52,18 @@ int main(int argc, char *argv[]) {
 
     QApplication app{argc, argv};
     QMainWindow window;
+    window.setAttribute(Qt::WA_NativeWindow);
     window.setFixedSize(width, height);
     window.setWindowTitle("Display");
     window.setAutoFillBackground(true);
 
-    Canvas canvas{&window};
-    canvas.setFixedSize(window.contentsRect().size());
-    canvas.move(window.contentsRect().topLeft());
+    QWindow canvas;
+    auto canvas_widget = QWidget::createWindowContainer(&canvas);
+    canvas_widget->setAttribute(Qt::WA_NativeWindow);
+    window.setCentralWidget(canvas_widget);
 
     QWidget overlay{&window};
+    overlay.setAttribute(Qt::WA_NativeWindow);// Note: this is required for overlay to be displayed above the canvas
     overlay.setFixedSize(window.contentsRect().size() / 2);
     overlay.move(window.contentsRect().center() - overlay.rect().center());
     overlay.setAutoFillBackground(true);
@@ -84,18 +74,25 @@ int main(int argc, char *argv[]) {
         window.setVisible(false);
     });
 
+    window.show();
+
+    auto native_app = QApplication::platformNativeInterface();
+    auto native_display = native_app->nativeResourceForIntegration(QByteArrayLiteral("display"));
+    auto native_window = reinterpret_cast<uint64_t>(native_app->nativeResourceForWindow(QByteArrayLiteral("surface"), &canvas));
+    if (native_window == 0u) {
+        native_window = canvas.winId();
+    }
+
     auto swapchain = device.create_swapchain(
         stream,
         SwapchainOption{
-            .display = 0u,
-            .window = static_cast<uint64_t>(canvas.winId()),
+            .display = reinterpret_cast<uint64_t>(native_display),
+            .window = native_window,
             .size = make_uint2(width, height),
             .wants_hdr = false,
-            .wants_vsync = false,
+            .wants_vsync = true,
             .back_buffer_count = 2,
         });
-
-    window.show();
 
     Clock clk;
     Framerate framerate;
