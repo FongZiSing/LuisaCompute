@@ -12,7 +12,7 @@
 namespace luisa::compute {
 
 FallbackTensorKernel::FallbackTensorKernel(DeviceInterface *device, ShaderManager *shader_manager, luisa::unique_ptr<TensorBuilder> &&t_args)
-    : device(device), tensor_builder(std::move(t_args)) {
+    : device(device), tensor_builder(std::move(t_args)), temp_alloc(65536, &temp_buffer_visitor, 2) {
     expr_topo.init(tensor_builder->root_expr().expressions, tensor_builder->allocated_tensor().size());
     auto sorted_tensors = expr_topo.topo_sort();
     executors.reserve(sorted_tensors.size());
@@ -117,6 +117,15 @@ void *FallbackTensorInterface::compile_kernel(luisa::unique_ptr<TensorBuilder> &
 void FallbackTensorInterface::destroy_kernel(void *kernel_ptr) noexcept {
     luisa::delete_with_allocator(static_cast<FallbackTensorKernel *>(kernel_ptr));
 }
+Argument::Buffer FallbackTensorCallback::allocate_temp_buffer(size_t size_bytes) {
+    size_bytes = (size_bytes + 15ull) & (~(15ull));
+    auto chunk = kernel->temp_alloc.allocate(size_bytes);
+    return Argument::Buffer{
+        chunk.handle,
+        chunk.offset,
+        size_bytes};
+}
+
 Argument::Buffer FallbackTensorCallback::get_tensor_buffer(TensorData *data) {
     auto iter = args->find(data);
     // is arg
@@ -166,6 +175,7 @@ void FallbackTensorInterface::execute(
     for (auto &i : kernel->executors) {
         i->execute(&callback, cmdlist);
     }
+    kernel->temp_buffer_visitor.dispose(cmdlist);
 }
 
 LC_TENSOR_API luisa::unique_ptr<TensorInterface> TensorInterface::create_fallback_backend(Device &device) {

@@ -10,6 +10,7 @@ struct FallbackTensorCallback {
     luisa::unordered_map<TensorData *, Argument::Buffer> *args;
     FallbackTensorKernel *kernel;
     ShaderManager* shader_manager;
+    Argument::Buffer allocate_temp_buffer(size_t size_bytes);
     Argument::Buffer get_tensor_buffer(TensorData *data);
 };
 struct ITensorExprExecutor {

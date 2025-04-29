@@ -197,5 +197,55 @@ SoftmaxImpl::SoftmaxImpl(
 SoftmaxImpl::~SoftmaxImpl() {
 }
 void SoftmaxImpl::execute(FallbackTensorCallback *callback, CommandList &cmdlist) const {
+
+    auto origin_buffer = callback->get_tensor_buffer(expr->input);
+    if (shaders.index() == 0) {
+        size_t next_size = expr->input->get_size(0);
+
+        Argument::Buffer read_buffer{origin_buffer};
+        Argument::Buffer write_buffer{invalid_resource_handle, 0, 0};
+        bool compute_exp = true;
+        auto shader = luisa::get<0>(shaders);
+        while (next_size > 1) {
+            if (next_size > 1024) {
+                write_buffer = callback->allocate_temp_buffer(next_size);
+            } else {
+                write_buffer = read_buffer;
+            }
+            ComputeDispatchCmdEncoder encoder(
+                shader.sum.shader_handle,
+                4,
+                shader.sum.uniform_size);
+            encoder.encode_buffer(read_buffer.handle, read_buffer.offset, read_buffer.size);
+            encoder.encode_buffer(write_buffer.handle, write_buffer.offset, write_buffer.size);
+            uint buffer_size = next_size;
+            encoder.encode_uniform(&buffer_size, sizeof(uint));
+            encoder.encode_uniform(&compute_exp, sizeof(bool));
+            encoder.set_dispatch_size(uint3(
+                (buffer_size + 1023ull) & (~(1023ull)),
+                1, 1));
+            cmdlist << std::move(encoder).build();
+            compute_exp = false;
+            read_buffer = write_buffer;
+            next_size = std::max<size_t>(1, (next_size + 1023) / 1024);
+        }
+        ComputeDispatchCmdEncoder encoder(
+            shader.final.shader_handle,
+            2,
+            shader.final.uniform_size);
+        encoder.encode_buffer(origin_buffer.handle, origin_buffer.offset, origin_buffer.size);
+        encoder.encode_buffer(read_buffer.handle, read_buffer.offset, read_buffer.size);
+        encoder.set_dispatch_size(uint3(expr->input->get_size(0), 1, 1));
+        cmdlist << std::move(encoder).build();
+    } else {
+        auto shader = luisa::get<1>(shaders);
+        ComputeDispatchCmdEncoder encoder(
+            shader.shader_handle,
+            1,
+            shader.uniform_size);
+        encoder.encode_buffer(origin_buffer.handle, origin_buffer.offset, origin_buffer.size);
+        encoder.set_dispatch_size(shader.desired_dispatch_size);
+        cmdlist << std::move(encoder).build();
+    }
 }
 }// namespace luisa::compute
